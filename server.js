@@ -399,8 +399,13 @@ const initDb = async () => {
     try {
       await db.query(sql);
     } catch (err) {
-      if (!err.message.includes('already exists')) {
-        console.error('DB step failed:', err.message.substring(0, 140));
+      if (!(err.message || '').includes('already exists')) {
+        // Log code + message + first SQL token so connection errors (which
+        // have empty .message) still surface a useful clue.
+        console.error('DB step failed:',
+          err.code || '(no code)',
+          err.message || '(no message)',
+          '— stmt:', String(sql).trim().slice(0, 80));
       }
     }
   }
@@ -421,7 +426,11 @@ const initDb = async () => {
   console.log('✅ DB ready.');
 };
 
-initDb().catch(err => console.error('initDb failed:', err.message));
+initDb().catch(err =>
+  console.error('initDb failed:',
+    err.code || '(no code)',
+    err.message || '(no message)',
+    '\nstack:', err.stack));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -1875,7 +1884,10 @@ app.get('/api/subscription/plans', async (_req, res) => {
     }
     res.json(r.rows);
   } catch (e) {
-    console.error('GET /api/subscription/plans:', e.message);
+    console.error('GET /api/subscription/plans:',
+      e.code || '(no code)',
+      e.message || '(no message)',
+      e.stack ? '\n' + e.stack.split('\n').slice(0, 4).join('\n') : '');
     res.status(500).json({ error:'Failed to load plans.' });
   }
 });
