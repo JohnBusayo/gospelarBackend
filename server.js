@@ -831,6 +831,57 @@ app.get('/api/admin/churches', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// List teachers, optionally filtered by church_id, or "?church=none" for
+// teachers with NULL church_id (legacy accounts that registered before the
+// church-aware flow). Used by the admin dashboard's Churches page so admins
+// can spot orphaned teachers and assign them to a church.
+app.get('/api/admin/teachers', adminAuth, async (req, res) => {
+  const { church } = req.query;
+  try {
+    let sql = `
+      SELECT u.id, u.email, u.full_name, u.church_id, u.created_at,
+             c.name AS church_name,
+             (SELECT COUNT(*) FROM classes WHERE teacher_email = u.email) AS classes,
+             (SELECT MAX(awarded_at) FROM teacher_marks WHERE awarded_by = u.email) AS last_active
+        FROM users u
+        LEFT JOIN churches c ON c.id = u.church_id
+       WHERE u.role = 'teacher'`;
+    const params = [];
+    if (church === 'none') {
+      sql += ' AND u.church_id IS NULL';
+    } else if (church) {
+      params.push(church);
+      sql += ` AND u.church_id = $${params.length}`;
+    }
+    sql += ' ORDER BY u.created_at DESC';
+    const r = await db.query(sql, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Assign (or reassign) a teacher to a church. Master-admin only — church
+// admins can't move teachers between churches. Also retro-stamps the
+// teacher's existing classes/attendance/marks with the new church_id so
+// admin insights pick them up immediately.
+app.post('/api/admin/teachers/:email/assign', adminAuth, async (req, res) => {
+  const { email } = req.params;
+  const { church_id } = req.body || {};
+  if (!church_id) return res.status(400).json({ error: 'church_id required.' });
+  try {
+    const u = await db.query('SELECT id FROM users WHERE LOWER(email)=LOWER($1) AND role=$2', [email, 'teacher']);
+    if (!u.rows.length) return res.status(404).json({ error: 'Teacher not found.' });
+    const c = await db.query('SELECT id FROM churches WHERE id = $1', [church_id]);
+    if (!c.rows.length) return res.status(404).json({ error: 'Church not found.' });
+
+    await db.query('UPDATE users SET church_id = $1 WHERE LOWER(email) = LOWER($2)', [church_id, email]);
+    // Backfill so historical data also rolls up to the assigned church.
+    const cls   = await db.query('UPDATE classes        SET church_id = $1 WHERE LOWER(teacher_email) = LOWER($2) AND church_id IS DISTINCT FROM $1 RETURNING id', [church_id, email]);
+    const att   = await db.query('UPDATE attendance     SET church_id = $1 WHERE LOWER(marked_by)     = LOWER($2) AND church_id IS DISTINCT FROM $1 RETURNING id', [church_id, email]);
+    const marks = await db.query('UPDATE teacher_marks  SET church_id = $1 WHERE LOWER(awarded_by)    = LOWER($2) AND church_id IS DISTINCT FROM $1 RETURNING id', [church_id, email]);
+    res.json({ ok: true, backfilled: { classes: cls.rowCount, attendance: att.rowCount, marks: marks.rowCount } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Church admin reads their own church info (for the dashboard banner).
 // Identifies via x-church-key.
 app.get('/api/church/me', churchAuth, (req, res) => {
