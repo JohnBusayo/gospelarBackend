@@ -434,6 +434,15 @@ const initDb = async () => {
     `ALTER TABLE churches ADD COLUMN IF NOT EXISTS approved_at        TIMESTAMPTZ`,
     `ALTER TABLE churches ADD COLUMN IF NOT EXISTS rejected_reason    TEXT`,
     `ALTER TABLE churches ADD COLUMN IF NOT EXISTS rejected_at        TIMESTAMPTZ`,
+
+    // ── Teacher approval — church admin authorizes new teachers ──────────────
+    // Existing users keep approval_status='approved' (default). New teacher
+    // signups (after this migration runs) explicitly land as 'pending'.
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_status   VARCHAR(20) DEFAULT 'approved'`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_at       TIMESTAMPTZ`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_by_email VARCHAR(255)`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS rejected_reason   TEXT`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS rejected_at       TIMESTAMPTZ`,
     // Make email unique so signup can detect duplicates cleanly.
     `DO $$ BEGIN
        IF NOT EXISTS (
@@ -812,6 +821,102 @@ app.post('/api/admin/church-applications/:id/reject', adminAuth, async (req, res
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CHURCH ADMIN — REVIEW + APPROVE / REJECT TEACHER SIGNUPS
+// All three endpoints use churchAuth, so a church admin signed in via
+// x-church-key only sees / acts on teachers belonging to their own church.
+// The master ADMIN_SECRET works too (super-admin sees everyone).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/church-admin/teachers?status=pending|approved|rejected|all
+// Lists teachers in the caller's church filtered by approval status.
+app.get('/api/church-admin/teachers', churchAuth, async (req, res) => {
+  const status = String(req.query.status || 'pending').toLowerCase();
+  if (!['pending', 'approved', 'rejected', 'all'].includes(status)) {
+    return res.status(400).json({ error: 'status must be pending|approved|rejected|all.' });
+  }
+  const params = [];
+  const where  = [`u.role = 'teacher'`];
+  if (req.church) { params.push(req.church.id); where.push(`u.church_id = $${params.length}`); }
+  if (status !== 'all') {
+    params.push(status);
+    where.push(`COALESCE(u.approval_status, 'approved') = $${params.length}`);
+  }
+  try {
+    const r = await db.query(`
+      SELECT
+        u.id, u.email, u.full_name, u.created_at,
+        COALESCE(u.approval_status, 'approved') AS approval_status,
+        u.approved_at, u.rejected_at, u.rejected_reason,
+        COALESCE(up.display_name, u.full_name)  AS display_name,
+        COALESCE(up.avatar_emoji, '👤')         AS avatar_emoji,
+        up.phone, up.location
+      FROM users u
+      LEFT JOIN user_profiles up ON up.email = u.email
+      WHERE ${where.join(' AND ')}
+      ORDER BY u.created_at DESC
+    `, params);
+    res.json({ status, count: r.rows.length, teachers: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/teachers:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load teachers.' });
+  }
+});
+
+// POST /api/church-admin/teachers/:id/approve
+app.post('/api/church-admin/teachers/:id/approve', churchAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  // Scope to the caller's church so a church admin can't approve someone
+  // else's teachers.
+  const params = [id];
+  let scope = '';
+  if (req.church) { params.push(req.church.id); scope = ` AND church_id = $${params.length}`; }
+  try {
+    const r = await db.query(`
+      UPDATE users
+         SET approval_status = 'approved',
+             approved_at     = NOW(),
+             approved_by_email = $${params.length + 1},
+             rejected_reason = NULL,
+             rejected_at     = NULL
+       WHERE id = $1 AND role = 'teacher'${scope}
+       RETURNING id, email, full_name, role, approval_status, approved_at
+    `, [...params, req.church?.admin_email || null]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Teacher not found in your church.' });
+    res.json({ message: 'Approved.', teacher: r.rows[0] });
+  } catch (e) {
+    console.error('POST /api/church-admin/teachers/:id/approve:', e.code, e.message);
+    res.status(500).json({ error: 'Approve failed.' });
+  }
+});
+
+// POST /api/church-admin/teachers/:id/reject  body: { reason }
+app.post('/api/church-admin/teachers/:id/reject', churchAuth, async (req, res) => {
+  const id     = parseInt(req.params.id, 10);
+  const reason = (req.body?.reason || '').trim() || null;
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  const params = [id, reason];
+  let scope = '';
+  if (req.church) { params.push(req.church.id); scope = ` AND church_id = $${params.length}`; }
+  try {
+    const r = await db.query(`
+      UPDATE users
+         SET approval_status = 'rejected',
+             rejected_reason = $2,
+             rejected_at     = NOW(),
+             approved_at     = NULL
+       WHERE id = $1 AND role = 'teacher'${scope}
+       RETURNING id, email, full_name, role, approval_status, rejected_reason, rejected_at
+    `, params);
+    if (!r.rows.length) return res.status(404).json({ error: 'Teacher not found in your church.' });
+    res.json({ message: 'Rejected.', teacher: r.rows[0] });
+  } catch (e) {
+    console.error('POST /api/church-admin/teachers/:id/reject:', e.code, e.message);
+    res.status(500).json({ error: 'Reject failed.' });
+  }
+});
+
 // Super-admin lists all churches (with member counts).
 // admin_token is omitted by default; pass ?include=token to get it back.
 // Even though this route is already adminAuth-gated, double-gating the token
@@ -819,12 +924,19 @@ app.post('/api/admin/church-applications/:id/reject', adminAuth, async (req, res
 // the table that include the token column).
 app.get('/api/admin/churches', adminAuth, async (req, res) => {
   const includeToken = req.query.include === 'token';
+  // Self-service pending churches live on the Approvals page until reviewed,
+  // and rejected ones shouldn't clutter the directory either. The Churches
+  // page is the directory of *active* churches only. Pass ?status=all to
+  // override (kept for diagnostics / future "show everything" toggle).
+  const wantAll = req.query.status === 'all';
   try {
     const r = await db.query(`
-      SELECT c.id, c.name, c.location, c.admin_email, c.invite_code, c.created_at${includeToken ? ', c.admin_token' : ''},
+      SELECT c.id, c.name, c.location, c.admin_email, c.invite_code, c.created_at,
+             COALESCE(c.approval_status, 'approved') AS approval_status${includeToken ? ', c.admin_token' : ''},
              (SELECT COUNT(*) FROM users    WHERE church_id = c.id AND role = 'teacher') AS teachers,
              (SELECT COUNT(*) FROM classes  WHERE church_id = c.id)                       AS classes
         FROM churches c
+       ${wantAll ? '' : "WHERE COALESCE(c.approval_status, 'approved') = 'approved'"}
        ORDER BY c.created_at DESC
     `);
     res.json(r.rows);
@@ -2304,31 +2416,42 @@ app.get('/api/admin/insights/most-completed-lessons', churchAuth, async (req, re
 //    Sorted by activity so dormant teachers float to the bottom.
 app.get('/api/admin/insights/teacher-performance', churchAuth, async (req, res) => {
   const days = insightsWindow(req);
-  const cScope = churchScope(req, 2);    // applied to classes table via "c.church_id = $2"
-  const cClause = cScope.sql ? cScope.sql.replace('AND church_id', 'AND c.church_id') : '';
+  // Source of truth is the `users` table (every teacher who registered with a
+  // church code lives here, even before they create a class). Stats then
+  // LEFT JOIN classes / marks so a teacher with zero classes still shows up
+  // with all-zero stats instead of disappearing entirely.
+  const params = [String(days)];
+  let where = `WHERE u.role = 'teacher'`;
+  if (req.church) {
+    params.push(req.church.id);
+    where += ` AND u.church_id = $${params.length}`;
+  }
   try {
     const r = await db.query(`
       SELECT
-        c.teacher_email,
-        COALESCE(up.display_name, split_part(c.teacher_email, '@', 1)) AS display_name,
-        COALESCE(up.avatar_emoji, '👤')                                AS avatar_emoji,
-        COUNT(DISTINCT c.id)                                           AS classes_owned,
-        COUNT(DISTINCT cm.student_email)                               AS students_enrolled,
+        u.email                                                          AS teacher_email,
+        COALESCE(up.display_name, u.full_name, split_part(u.email,'@',1)) AS display_name,
+        COALESCE(up.avatar_emoji, '👤')                                  AS avatar_emoji,
+        COALESCE(u.approval_status, 'approved')                          AS approval_status,
+        u.created_at                                                     AS joined_at,
+        COUNT(DISTINCT c.id)                                             AS classes_owned,
+        COUNT(DISTINCT cm.student_email)                                 AS students_enrolled,
         COUNT(tm.id) FILTER
-          (WHERE tm.awarded_at >= NOW() - ($1 || ' days')::interval)   AS marks_awarded_recent,
+          (WHERE tm.awarded_at >= NOW() - ($1 || ' days')::interval)     AS marks_awarded_recent,
         COALESCE(SUM(tm.points) FILTER
           (WHERE tm.awarded_at >= NOW() - ($1 || ' days')::interval), 0) AS points_awarded_recent,
-        COUNT(tm.id)                                                   AS marks_awarded_total,
-        COALESCE(SUM(tm.points), 0)                                    AS points_awarded_total,
-        MAX(tm.awarded_at)                                             AS last_active
-      FROM classes c
-      LEFT JOIN class_members cm ON cm.class_id = c.id
+        COUNT(tm.id)                                                     AS marks_awarded_total,
+        COALESCE(SUM(tm.points), 0)                                      AS points_awarded_total,
+        MAX(tm.awarded_at)                                               AS last_active
+      FROM users u
+      LEFT JOIN classes        c  ON c.teacher_email = u.email
+      LEFT JOIN class_members  cm ON cm.class_id = c.id
       LEFT JOIN teacher_marks  tm ON tm.class_id = c.id
-      LEFT JOIN user_profiles  up ON up.email   = c.teacher_email
-      WHERE 1=1${cClause}
-      GROUP BY c.teacher_email, up.display_name, up.avatar_emoji
-      ORDER BY marks_awarded_recent DESC NULLS LAST, classes_owned DESC
-    `, [String(days), ...cScope.params]);
+      LEFT JOIN user_profiles  up ON up.email   = u.email
+      ${where}
+      GROUP BY u.email, u.full_name, u.approval_status, u.created_at, up.display_name, up.avatar_emoji
+      ORDER BY marks_awarded_recent DESC NULLS LAST, classes_owned DESC, u.created_at DESC
+    `, params);
     res.json({ windowDays: days, teachers: r.rows });
   } catch (e) {
     console.error('insights/teacher-performance:', e.code || '(no code)', e.message);
@@ -2601,15 +2724,34 @@ app.post('/api/auth/register', async (req, res) => {
     const existing = await db.query('SELECT id FROM users WHERE email=$1', [email.toLowerCase()]);
     if (existing.rows.length) return res.status(409).json({ error:'Account already exists.' });
     const hash = await bcrypt.hash(password, 12);
+
+    // Teachers start as 'pending' — the church admin must approve them
+    // before they can sign in. Students keep the default 'approved'.
+    const approvalStatus = safeRole === 'teacher' ? 'pending' : 'approved';
+
     const r    = await db.query(
-      `INSERT INTO users (email,password_hash,full_name,role,church_id) VALUES ($1,$2,$3,$4,$5) RETURNING id,email,full_name,role,church_id`,
-      [email.toLowerCase(), hash, full_name||null, safeRole, churchId]
+      `INSERT INTO users (email,password_hash,full_name,role,church_id,approval_status)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id,email,full_name,role,church_id,approval_status`,
+      [email.toLowerCase(), hash, full_name||null, safeRole, churchId, approvalStatus]
     );
     await db.query(
       `INSERT INTO user_profiles (email,display_name) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
       [email.toLowerCase(), full_name||null]
     );
     const user  = r.rows[0];
+
+    // Pending teachers get a 201 with a pending flag — no token, since they
+    // can't actually use the app until approved.
+    if (user.approval_status === 'pending') {
+      return res.status(201).json({
+        message: 'Application submitted. Your church admin will review and approve your account before you can sign in.',
+        user: { id:user.id, email:user.email, full_name:user.full_name, role:user.role, church_id:user.church_id },
+        approval_status: 'pending',
+        pending: true,
+      });
+    }
+
     const token = Buffer.from(`${user.email}:${Date.now()}:${Math.random()}`).toString('base64');
     res.status(201).json({
       message:'Account created!',
@@ -2624,13 +2766,27 @@ app.post('/api/auth/login', async (req, res) => {
   if (!email||!password) return res.status(400).json({ error:'Email and password required.' });
   try {
     const r = await db.query(
-      'SELECT id,email,password_hash,full_name,role,session_token,session_at FROM users WHERE email=$1',
+      `SELECT id,email,password_hash,full_name,role,session_token,session_at,
+              COALESCE(approval_status,'approved') AS approval_status,
+              rejected_reason
+         FROM users WHERE email=$1`,
       [email.toLowerCase()]
     );
     if (!r.rows.length) return res.status(401).json({ error:'No account found with this email.' });
     const user  = r.rows[0];
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return res.status(401).json({ error:'Incorrect password.' });
+
+    // Teacher approval gate — block pending/rejected before issuing a token.
+    if (user.role === 'teacher' && user.approval_status !== 'approved') {
+      const status  = user.approval_status;
+      const message = status === 'pending'
+        ? 'Your teacher account is awaiting approval from your church admin. You will be able to sign in once approved.'
+        : (user.rejected_reason
+            ? `Your teacher account application was declined: ${user.rejected_reason}`
+            : 'Your teacher account application was declined. Contact your church admin.');
+      return res.status(403).json({ error: status, message });
+    }
     // Single-session enforcement
     if (user.session_token && user.session_at) {
       const ageDays = (Date.now()-new Date(user.session_at).getTime()) / 86400000;
@@ -3375,10 +3531,18 @@ app.post('/api/teacher/sync', async (req, res) => {
   if (!teacher_email) return res.status(400).json({ error: 'teacher_email required.' });
 
   // Look up the teacher's church_id once — every record gets stamped with it.
-  const u = await db.query('SELECT church_id FROM users WHERE email = $1 AND role = $2', [teacher_email.toLowerCase(), 'teacher']);
-  if (!u.rows.length) return res.status(404).json({ error: 'Teacher account not found.' });
+  // Two-step lookup so we can tell "no such email" apart from "exists but not a teacher".
+  const u = await db.query('SELECT role, church_id FROM users WHERE email = $1', [teacher_email.toLowerCase()]);
+  if (!u.rows.length) {
+    return res.status(404).json({ code: 'no_account', error: 'No account found for this email on the server. Register a teacher account first.' });
+  }
+  if (u.rows[0].role !== 'teacher') {
+    return res.status(403).json({ code: 'not_a_teacher', error: 'This account is not a teacher account. Re-register as a teacher with your church invite code to sync.' });
+  }
   const churchId = u.rows[0].church_id;
-  if (!churchId) return res.status(400).json({ error: 'Teacher is not assigned to a church. Ask your church admin to set this up.' });
+  if (!churchId) {
+    return res.status(400).json({ code: 'no_church', error: 'Teacher is not assigned to a church. Re-register with your church invite code.' });
+  }
 
   const classMap   = {};   // local_id → server_id
   const studentMap = {};   // local_id → student_email (local students get a synthetic email)
