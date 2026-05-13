@@ -5,6 +5,7 @@ const cors    = require('cors');
 const axios   = require('axios');
 const db      = require('./db');
 const { sendApprovalEmail, sendRejectionEmail, sendMail } = require('./services/mailer');
+const { publishToPlatform } = require('./services/socialPublishers');
 require('dotenv').config();
 
 const app = express();
@@ -588,6 +589,307 @@ const initDb = async () => {
        TRUE
      )
      ON CONFLICT (slug) DO NOTHING`,
+
+    // ── Multi-branch support (PDF item #1) ─────────────────────────────────
+    // A branch is a campus or location belonging to one church. Most existing
+    // entities (users, classes, attendance, teacher_marks) gain an optional
+    // branch_id so the admin dashboard can filter to a single branch.
+    `CREATE TABLE IF NOT EXISTS branches (
+       id              SERIAL       PRIMARY KEY,
+       church_id       INT          NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+       name            VARCHAR(200) NOT NULL,
+       location        VARCHAR(200),
+       is_headquarters BOOLEAN      NOT NULL DEFAULT FALSE,
+       created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+       UNIQUE (church_id, name)
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_branches_church ON branches(church_id)`,
+
+    `ALTER TABLE users         ADD COLUMN IF NOT EXISTS branch_id INT REFERENCES branches(id) ON DELETE SET NULL`,
+    `ALTER TABLE classes       ADD COLUMN IF NOT EXISTS branch_id INT REFERENCES branches(id) ON DELETE SET NULL`,
+    `ALTER TABLE attendance    ADD COLUMN IF NOT EXISTS branch_id INT REFERENCES branches(id) ON DELETE SET NULL`,
+    `ALTER TABLE teacher_marks ADD COLUMN IF NOT EXISTS branch_id INT REFERENCES branches(id) ON DELETE SET NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_users_branch         ON users(branch_id)         WHERE branch_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_classes_branch       ON classes(branch_id)       WHERE branch_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_attendance_branch    ON attendance(branch_id)    WHERE branch_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_teacher_marks_branch ON teacher_marks(branch_id) WHERE branch_id IS NOT NULL`,
+
+    // ── Staff roster (PDF item #1: role-based access control) ──────────────
+    // Each church has a roster of staff members with a role. Today the only
+    // person who logs in is the church's admin_email (token-based), so the
+    // backfill inserts that email as a pastor automatically; per-user logins
+    // are a future pass.
+    `CREATE TABLE IF NOT EXISTS staff (
+       id          SERIAL       PRIMARY KEY,
+       church_id   INT          NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+       branch_id   INT          REFERENCES branches(id) ON DELETE SET NULL,
+       email       VARCHAR(255) NOT NULL,
+       name        VARCHAR(200),
+       role        VARCHAR(40)  NOT NULL DEFAULT 'worker',
+       status      VARCHAR(20)  NOT NULL DEFAULT 'active',
+       created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+       UNIQUE (church_id, email)
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_staff_church ON staff(church_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_staff_email  ON staff(LOWER(email))`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (
+         SELECT 1 FROM pg_constraint WHERE conname = 'staff_role_check'
+       ) THEN
+         ALTER TABLE staff ADD CONSTRAINT staff_role_check CHECK (
+           role IN ('super_admin','pastor','finance','worker','sunday_school_teacher','member')
+         );
+       END IF;
+     END $$`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (
+         SELECT 1 FROM pg_constraint WHERE conname = 'staff_status_check'
+       ) THEN
+         ALTER TABLE staff ADD CONSTRAINT staff_status_check CHECK (
+           status IN ('active','invited','disabled')
+         );
+       END IF;
+     END $$`,
+
+    // ── Activity log (PDF item #1: real-time activity tracking) ────────────
+    // One row per audit-worthy action. Frontend polls the cursor endpoint to
+    // surface a live feed.
+    `CREATE TABLE IF NOT EXISTS activity_log (
+       id           BIGSERIAL    PRIMARY KEY,
+       church_id    INT          NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+       branch_id    INT          REFERENCES branches(id) ON DELETE SET NULL,
+       actor_email  VARCHAR(255),
+       actor_name   VARCHAR(200),
+       action       VARCHAR(80)  NOT NULL,
+       entity_type  VARCHAR(40),
+       entity_id    VARCHAR(80),
+       summary      TEXT         NOT NULL,
+       metadata     JSONB,
+       created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_activity_church_created ON activity_log(church_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_activity_branch_created ON activity_log(branch_id, created_at DESC) WHERE branch_id IS NOT NULL`,
+
+    // ── Auto-seed an HQ branch + pastor staff row for each existing church ─
+    // Idempotent: only inserts where missing.
+    `INSERT INTO branches (church_id, name, location, is_headquarters)
+       SELECT c.id, 'Headquarters', c.location, TRUE
+         FROM churches c
+        WHERE NOT EXISTS (
+          SELECT 1 FROM branches b WHERE b.church_id = c.id
+        )`,
+    `INSERT INTO staff (church_id, email, name, role, status)
+       SELECT c.id, LOWER(c.admin_email), COALESCE(c.contact_name, c.admin_email), 'pastor', 'active'
+         FROM churches c
+        WHERE c.admin_email IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM staff s
+             WHERE s.church_id = c.id AND LOWER(s.email) = LOWER(c.admin_email)
+          )`,
+    // Backfill branch_id on existing rows to point at each church's HQ branch.
+    `UPDATE users u
+        SET branch_id = b.id
+       FROM branches b
+      WHERE u.branch_id IS NULL
+        AND u.church_id IS NOT NULL
+        AND b.church_id = u.church_id
+        AND b.is_headquarters = TRUE`,
+    `UPDATE classes c
+        SET branch_id = b.id
+       FROM branches b
+      WHERE c.branch_id IS NULL
+        AND c.church_id IS NOT NULL
+        AND b.church_id = c.church_id
+        AND b.is_headquarters = TRUE`,
+    `UPDATE attendance a
+        SET branch_id = b.id
+       FROM branches b
+      WHERE a.branch_id IS NULL
+        AND a.church_id IS NOT NULL
+        AND b.church_id = a.church_id
+        AND b.is_headquarters = TRUE`,
+    `UPDATE teacher_marks tm
+        SET branch_id = b.id
+       FROM branches b
+      WHERE tm.branch_id IS NULL
+        AND tm.church_id IS NOT NULL
+        AND b.church_id = tm.church_id
+        AND b.is_headquarters = TRUE`,
+
+    // ── Member management (PDF item #2) ───────────────────────────────────
+    // Distinct from `users` (app accounts: teachers + students) and `staff`
+    // (administrative roles). A member is a row in the congregation registry.
+    // Some members will also have a `users` account — joined by email — but
+    // most won't.
+    `CREATE TABLE IF NOT EXISTS families (
+       id              SERIAL       PRIMARY KEY,
+       church_id       INT          NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+       branch_id       INT          REFERENCES branches(id) ON DELETE SET NULL,
+       name            VARCHAR(200) NOT NULL,
+       head_member_id  INT,                     -- FK added below, after members exists
+       address         TEXT,
+       notes           TEXT,
+       created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+       updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_families_church ON families(church_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_families_branch ON families(branch_id) WHERE branch_id IS NOT NULL`,
+
+    `CREATE TABLE IF NOT EXISTS members (
+       id              SERIAL        PRIMARY KEY,
+       church_id       INT           NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+       branch_id       INT           REFERENCES branches(id) ON DELETE SET NULL,
+       family_id       INT           REFERENCES families(id) ON DELETE SET NULL,
+       family_role     VARCHAR(20),  -- head|spouse|child|dependent|other
+       first_name      VARCHAR(120)  NOT NULL,
+       last_name       VARCHAR(120),
+       email           VARCHAR(255),
+       phone           VARCHAR(50),
+       gender          VARCHAR(10),  -- male|female|other
+       date_of_birth   DATE,
+       marital_status  VARCHAR(20),
+       address         TEXT,
+       occupation      VARCHAR(150),
+       status          VARCHAR(20)   NOT NULL DEFAULT 'member',
+       photo_base64    TEXT,
+       joined_at       DATE          NOT NULL DEFAULT CURRENT_DATE,
+       notes           TEXT,
+       created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+       updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_members_church  ON members(church_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_members_branch  ON members(branch_id) WHERE branch_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_members_family  ON members(family_id) WHERE family_id IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_members_status  ON members(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_members_email   ON members(LOWER(email)) WHERE email IS NOT NULL`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'members_status_check') THEN
+         ALTER TABLE members ADD CONSTRAINT members_status_check CHECK (
+           status IN ('visitor','first_timer','member','inactive')
+         );
+       END IF;
+     END $$`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'members_family_role_check') THEN
+         ALTER TABLE members ADD CONSTRAINT members_family_role_check CHECK (
+           family_role IS NULL OR family_role IN ('head','spouse','child','dependent','other')
+         );
+       END IF;
+     END $$`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'families_head_fk') THEN
+         ALTER TABLE families
+           ADD CONSTRAINT families_head_fk
+           FOREIGN KEY (head_member_id) REFERENCES members(id) ON DELETE SET NULL;
+       END IF;
+     END $$`,
+
+    // ── Worker / volunteer assignments ─────────────────────────────────────
+    // A member can hold multiple active assignments (e.g. choir leader + youth
+    // volunteer). ended_at IS NULL means the role is currently active.
+    `CREATE TABLE IF NOT EXISTS worker_assignments (
+       id          SERIAL       PRIMARY KEY,
+       member_id   INT          NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+       church_id   INT          NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+       branch_id   INT          REFERENCES branches(id) ON DELETE SET NULL,
+       department  VARCHAR(80)  NOT NULL,
+       role        VARCHAR(80)  NOT NULL DEFAULT 'member',
+       started_at  DATE         NOT NULL DEFAULT CURRENT_DATE,
+       ended_at    DATE,
+       notes       TEXT,
+       created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_worker_member     ON worker_assignments(member_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_worker_church     ON worker_assignments(church_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_worker_dept       ON worker_assignments(department) WHERE ended_at IS NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_worker_active     ON worker_assignments(church_id) WHERE ended_at IS NULL`,
+
+    // ── Social media: connected accounts ────────────────────────────────────
+    // One row per (church, platform) connection. Tokens are stored as plain
+    // text — wrap with KMS / pgcrypto in production. `meta` JSONB holds
+    // platform-specific fields (page_id for FB, ig_user_id for IG, etc).
+    `CREATE TABLE IF NOT EXISTS social_accounts (
+      id              SERIAL PRIMARY KEY,
+      church_id       INTEGER NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+      platform        VARCHAR(32) NOT NULL,
+      account_label   TEXT,
+      external_id     TEXT,
+      access_token    TEXT,
+      refresh_token   TEXT,
+      expires_at      TIMESTAMPTZ,
+      meta            JSONB DEFAULT '{}'::jsonb,
+      connected_by    TEXT,
+      status          VARCHAR(20) DEFAULT 'active',
+      created_at      TIMESTAMPTZ DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (church_id, platform)
+    )`,
+
+    // ── Social media: posts ─────────────────────────────────────────────────
+    // The flyer + caption the church wants to broadcast. `platforms` is the
+    // requested set; `results` is the per-platform outcome (status, external
+    // post id, error) populated by the dispatcher.
+    `CREATE TABLE IF NOT EXISTS social_posts (
+      id            SERIAL PRIMARY KEY,
+      church_id     INTEGER NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+      branch_id     INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+      image_base64  TEXT,
+      image_mime    VARCHAR(50) DEFAULT 'image/jpeg',
+      caption       TEXT,
+      platforms     JSONB DEFAULT '[]'::jsonb,
+      results       JSONB DEFAULT '{}'::jsonb,
+      status        VARCHAR(20) DEFAULT 'queued',
+      scheduled_at  TIMESTAMPTZ,
+      published_at  TIMESTAMPTZ,
+      created_by    TEXT,
+      created_at    TIMESTAMPTZ DEFAULT NOW(),
+      updated_at    TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
+    `CREATE INDEX IF NOT EXISTS idx_social_posts_church   ON social_posts(church_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_social_accounts_church ON social_accounts(church_id)`,
+
+    // Trigger to keep members.updated_at fresh on any UPDATE.
+    `DROP TRIGGER IF EXISTS members_updated_at ON members`,
+    `CREATE TRIGGER members_updated_at
+       BEFORE UPDATE ON members
+       FOR EACH ROW EXECUTE FUNCTION update_updated_at()`,
+    `DROP TRIGGER IF EXISTS families_updated_at ON families`,
+    `CREATE TRIGGER families_updated_at
+       BEFORE UPDATE ON families
+       FOR EACH ROW EXECUTE FUNCTION update_updated_at()`,
+
+    // ── Certificates (PDF item #7: learning achievements) ────────────────
+    // Issued manually by a church admin to a student. Keyed on the student's
+    // email (matches the existing user_scores / class_members system); a
+    // snapshotted display name keeps the printable certificate stable even
+    // if the underlying user row later changes. `context` is JSONB for the
+    // structured payload (unit_id, score, lessons_count, …) used by the
+    // printout.
+    `CREATE TABLE IF NOT EXISTS certificates (
+       id              SERIAL        PRIMARY KEY,
+       church_id       INT           NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+       branch_id       INT           REFERENCES branches(id) ON DELETE SET NULL,
+       student_email   VARCHAR(255)  NOT NULL,
+       student_name    VARCHAR(200)  NOT NULL,
+       type            VARCHAR(40)   NOT NULL,
+       title           VARCHAR(200)  NOT NULL,
+       body            TEXT,
+       context         JSONB,
+       certificate_no  VARCHAR(40)   UNIQUE NOT NULL,
+       awarded_by      VARCHAR(255),
+       awarded_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+       revoked_at      TIMESTAMPTZ
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_cert_church ON certificates(church_id, awarded_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_cert_email  ON certificates(LOWER(student_email))`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'certificates_type_check') THEN
+         ALTER TABLE certificates ADD CONSTRAINT certificates_type_check CHECK (
+           type IN ('completion','excellence','attendance','memorization','custom')
+         );
+       END IF;
+     END $$`,
   ];
 
   for (const sql of steps) {
@@ -644,10 +946,17 @@ const adminAuth = (req, res, next) => {
 // `x-church-key` header, looks up which church it belongs to, and attaches
 // `req.church = { id, name, ... }` to the request. Master ADMIN_SECRET also
 // works (treated as super-admin with no church scope; req.church = null).
+//
+// Also attaches:
+//   req.staff           — the staff row for the church's admin_email (role + branch)
+//   req.activeBranchId  — null = all branches; otherwise the selected branch id
+//                         (read from x-branch-id header or ?branch_id query param)
 const churchAuth = async (req, res, next) => {
   const masterKey = req.headers['x-admin-key'];
   if (masterKey && masterKey === process.env.ADMIN_SECRET) {
-    req.church = null;   // super-admin — no church filter
+    req.church          = null;   // super-admin — no church filter
+    req.staff           = { role: 'super_admin', email: null, name: 'Super Admin' };
+    req.activeBranchId  = null;
     return next();
   }
   const churchKey = req.headers['x-church-key'];
@@ -668,6 +977,42 @@ const churchAuth = async (req, res, next) => {
       });
     }
     req.church = r.rows[0];
+
+    // Load the staff row matching the church's admin_email. The token-based
+    // login doesn't carry an end-user identity, so we treat the admin_email
+    // owner as the current actor. Per-user login is a future pass.
+    const sr = await db.query(
+      `SELECT id, branch_id, email, name, role, status
+         FROM staff
+        WHERE church_id = $1 AND LOWER(email) = LOWER($2)
+        LIMIT 1`,
+      [req.church.id, req.church.admin_email],
+    );
+    req.staff = sr.rows[0] || {
+      role: 'pastor', email: req.church.admin_email, name: null, branch_id: null,
+    };
+
+    // Active branch comes from header (preferred) or query string. Empty /
+    // "all" means no branch filter (cross-branch view).
+    const rawBranch = req.headers['x-branch-id'] || req.query.branch_id || '';
+    if (rawBranch && String(rawBranch).toLowerCase() !== 'all') {
+      const bid = parseInt(rawBranch, 10);
+      if (!Number.isFinite(bid)) {
+        return res.status(400).json({ error: 'Invalid branch_id.' });
+      }
+      // Verify the branch belongs to this church before trusting it.
+      const br = await db.query(
+        'SELECT id FROM branches WHERE id = $1 AND church_id = $2',
+        [bid, req.church.id],
+      );
+      if (!br.rows.length) {
+        return res.status(403).json({ error: 'Branch not in your church.' });
+      }
+      req.activeBranchId = bid;
+    } else {
+      req.activeBranchId = null;
+    }
+
     next();
   } catch (e) {
     console.error('churchAuth:', e.message);
@@ -681,6 +1026,65 @@ const churchScope = (req, paramIndex) => {
   if (!req.church) return { sql: '', params: [] };
   return { sql: ` AND church_id = $${paramIndex}`, params: [req.church.id] };
 };
+
+// branchScope adds an AND branch_id = $Y clause when an active branch is
+// selected. Use when the table has a branch_id column. Returns the same shape
+// as churchScope so usage is symmetric:
+//   const cs = churchScope(req, $cIdx);
+//   const bs = branchScope(req, $cIdx + cs.params.length);
+//   db.query(`... WHERE 1=1${cs.sql}${bs.sql}`, [...cs.params, ...bs.params]);
+const branchScope = (req, paramIndex) => {
+  if (!req.activeBranchId) return { sql: '', params: [] };
+  return { sql: ` AND branch_id = $${paramIndex}`, params: [req.activeBranchId] };
+};
+
+// Role → allowed actions matrix. Used by the new admin endpoints to 403 calls
+// that the current staff member shouldn't make. UI hides menus separately —
+// this is the server-side enforcement.
+const ROLE_PERMS = {
+  super_admin: { branches: 'edit', staff: 'edit', activity: 'view', settings: 'edit', social: 'edit' },
+  pastor:      { branches: 'edit', staff: 'edit', activity: 'view', settings: 'edit', social: 'edit' },
+  finance:     { branches: 'view', staff: 'view', activity: 'view', settings: 'view', social: 'view' },
+  worker:      { branches: 'view', staff: 'none', activity: 'view', settings: 'none', social: 'none' },
+  sunday_school_teacher: { branches: 'view', staff: 'none', activity: 'view', settings: 'none', social: 'none' },
+  member:      { branches: 'none', staff: 'none', activity: 'none', settings: 'none', social: 'none' },
+};
+
+const requirePerm = (resource, level) => (req, res, next) => {
+  const role = req.staff?.role || 'member';
+  const have = (ROLE_PERMS[role] || {})[resource] || 'none';
+  const rank = { none: 0, view: 1, edit: 2 };
+  if (rank[have] < rank[level]) {
+    return res.status(403).json({ error: 'Forbidden', required: `${resource}:${level}`, have: `${resource}:${have}` });
+  }
+  next();
+};
+
+// Append a row to the activity log. Errors are swallowed — auditing must not
+// break the operation that triggered it.
+async function logActivity({ church_id, branch_id, actor_email, actor_name, action, entity_type, entity_id, summary, metadata }) {
+  if (!church_id || !action || !summary) return;
+  try {
+    await db.query(
+      `INSERT INTO activity_log
+         (church_id, branch_id, actor_email, actor_name, action, entity_type, entity_id, summary, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        church_id,
+        branch_id || null,
+        actor_email || null,
+        actor_name || null,
+        action,
+        entity_type || null,
+        entity_id ? String(entity_id) : null,
+        summary,
+        metadata ? JSON.stringify(metadata) : null,
+      ],
+    );
+  } catch (e) {
+    console.error('logActivity:', e.code || '(no code)', e.message);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HEALTH
@@ -1143,6 +1547,18 @@ app.post('/api/church-admin/teachers/:id/approve', churchAuth, async (req, res) 
        RETURNING id, email, full_name, role, approval_status, approved_at
     `, [...params, req.church?.admin_email || null]);
     if (!r.rows.length) return res.status(404).json({ error: 'Teacher not found in your church.' });
+    if (req.church) {
+      logActivity({
+        church_id:   req.church.id,
+        branch_id:   req.activeBranchId,
+        actor_email: req.staff?.email,
+        actor_name:  req.staff?.name,
+        action:      'teacher.approved',
+        entity_type: 'teacher',
+        entity_id:   r.rows[0].id,
+        summary:     `Approved teacher ${r.rows[0].full_name || r.rows[0].email}`,
+      });
+    }
     res.json({ message: 'Approved.', teacher: r.rows[0] });
   } catch (e) {
     console.error('POST /api/church-admin/teachers/:id/approve:', e.code, e.message);
@@ -1169,10 +1585,1724 @@ app.post('/api/church-admin/teachers/:id/reject', churchAuth, async (req, res) =
        RETURNING id, email, full_name, role, approval_status, rejected_reason, rejected_at
     `, params);
     if (!r.rows.length) return res.status(404).json({ error: 'Teacher not found in your church.' });
+    if (req.church) {
+      logActivity({
+        church_id:   req.church.id,
+        branch_id:   req.activeBranchId,
+        actor_email: req.staff?.email,
+        actor_name:  req.staff?.name,
+        action:      'teacher.rejected',
+        entity_type: 'teacher',
+        entity_id:   r.rows[0].id,
+        summary:     `Rejected teacher ${r.rows[0].full_name || r.rows[0].email}${reason ? ` — ${reason}` : ''}`,
+      });
+    }
     res.json({ message: 'Rejected.', teacher: r.rows[0] });
   } catch (e) {
     console.error('POST /api/church-admin/teachers/:id/reject:', e.code, e.message);
     res.status(500).json({ error: 'Reject failed.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHURCH ADMIN — BRANCHES, STAFF, ACTIVITY, ADMIN INSIGHTS
+// All require x-church-key (or x-admin-key for super-admin). New for PDF #1.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/church-admin/me — bootstraps the dashboard with the church row,
+// the current staff member, all the branches this church owns, and the
+// active branch id (derived from request headers).
+app.get('/api/church-admin/me', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  try {
+    const br = await db.query(
+      `SELECT id, name, location, is_headquarters, created_at
+         FROM branches
+        WHERE church_id = $1
+        ORDER BY is_headquarters DESC, name ASC`,
+      [req.church.id],
+    );
+    const { admin_token, ...churchSafe } = req.church;
+    res.json({
+      church:         churchSafe,
+      staff:          req.staff,
+      branches:       br.rows,
+      activeBranchId: req.activeBranchId,
+    });
+  } catch (e) {
+    console.error('GET /api/church-admin/me:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load profile.' });
+  }
+});
+
+// ── Branches ────────────────────────────────────────────────────────────────
+app.get('/api/church-admin/branches', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  try {
+    const r = await db.query(
+      `SELECT b.id, b.name, b.location, b.is_headquarters, b.created_at,
+              (SELECT COUNT(*)::int FROM users         u WHERE u.branch_id = b.id) AS member_count,
+              (SELECT COUNT(*)::int FROM classes       c WHERE c.branch_id = b.id) AS class_count,
+              (SELECT COUNT(*)::int FROM activity_log  a WHERE a.branch_id = b.id
+                 AND a.created_at > NOW() - INTERVAL '30 days')                    AS recent_activity
+         FROM branches b
+        WHERE b.church_id = $1
+        ORDER BY b.is_headquarters DESC, b.name ASC`,
+      [req.church.id],
+    );
+    res.json({ branches: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/branches:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load branches.' });
+  }
+});
+
+app.post('/api/church-admin/branches', churchAuth, requirePerm('branches', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const name = String(req.body?.name || '').trim();
+  const location = String(req.body?.location || '').trim() || null;
+  const isHq = !!req.body?.is_headquarters;
+  if (!name) return res.status(400).json({ error: 'Branch name is required.' });
+  try {
+    if (isHq) {
+      await db.query('UPDATE branches SET is_headquarters = FALSE WHERE church_id = $1', [req.church.id]);
+    }
+    const r = await db.query(
+      `INSERT INTO branches (church_id, name, location, is_headquarters)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, location, is_headquarters, created_at`,
+      [req.church.id, name, location, isHq],
+    );
+    logActivity({
+      church_id: req.church.id, branch_id: r.rows[0].id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'branch.created', entity_type: 'branch', entity_id: r.rows[0].id,
+      summary: `Created branch ${name}`,
+    });
+    res.status(201).json({ branch: r.rows[0] });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'A branch with this name already exists.' });
+    console.error('POST /api/church-admin/branches:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to create branch.' });
+  }
+});
+
+app.put('/api/church-admin/branches/:id', churchAuth, requirePerm('branches', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  const name = req.body?.name != null ? String(req.body.name).trim() : null;
+  const location = req.body?.location != null ? (String(req.body.location).trim() || null) : null;
+  const isHq = req.body?.is_headquarters;
+  try {
+    if (isHq === true) {
+      await db.query('UPDATE branches SET is_headquarters = FALSE WHERE church_id = $1', [req.church.id]);
+    }
+    const r = await db.query(
+      `UPDATE branches
+          SET name            = COALESCE($1, name),
+              location        = COALESCE($2, location),
+              is_headquarters = COALESCE($3, is_headquarters)
+        WHERE id = $4 AND church_id = $5
+        RETURNING id, name, location, is_headquarters, created_at`,
+      [name, location, typeof isHq === 'boolean' ? isHq : null, id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Branch not found.' });
+    logActivity({
+      church_id: req.church.id, branch_id: r.rows[0].id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'branch.updated', entity_type: 'branch', entity_id: r.rows[0].id,
+      summary: `Updated branch ${r.rows[0].name}`,
+    });
+    res.json({ branch: r.rows[0] });
+  } catch (e) {
+    console.error('PUT /api/church-admin/branches/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to update branch.' });
+  }
+});
+
+app.delete('/api/church-admin/branches/:id', churchAuth, requirePerm('branches', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    // Refuse if anything still points at this branch — keeps the data sane.
+    const dep = await db.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM users   WHERE branch_id = $1) AS users,
+         (SELECT COUNT(*)::int FROM classes WHERE branch_id = $1) AS classes`,
+      [id],
+    );
+    const { users: uc, classes: cc } = dep.rows[0];
+    if (uc > 0 || cc > 0) {
+      return res.status(409).json({
+        error: 'Branch has dependents.',
+        members: uc,
+        classes: cc,
+        message: 'Reassign members and classes to another branch before deleting.',
+      });
+    }
+    const r = await db.query(
+      'DELETE FROM branches WHERE id = $1 AND church_id = $2 RETURNING id, name',
+      [id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Branch not found.' });
+    logActivity({
+      church_id: req.church.id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'branch.deleted', entity_type: 'branch', entity_id: id,
+      summary: `Deleted branch ${r.rows[0].name}`,
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/church-admin/branches/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to delete branch.' });
+  }
+});
+
+// ── Staff ───────────────────────────────────────────────────────────────────
+app.get('/api/church-admin/staff', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  try {
+    const r = await db.query(
+      `SELECT s.id, s.email, s.name, s.role, s.status, s.branch_id, s.created_at,
+              b.name AS branch_name
+         FROM staff s
+         LEFT JOIN branches b ON b.id = s.branch_id
+        WHERE s.church_id = $1
+        ORDER BY s.role ASC, s.name ASC`,
+      [req.church.id],
+    );
+    res.json({ staff: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/staff:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load staff.' });
+  }
+});
+
+const STAFF_ROLES = ['super_admin','pastor','finance','worker','sunday_school_teacher','member'];
+
+app.post('/api/church-admin/staff', churchAuth, requirePerm('staff', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const email = String(req.body?.email || '').toLowerCase().trim();
+  const name  = String(req.body?.name  || '').trim() || null;
+  const role  = String(req.body?.role  || 'worker');
+  const branch_id = req.body?.branch_id ? parseInt(req.body.branch_id, 10) : null;
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email.' });
+  if (!STAFF_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role.' });
+  if (branch_id != null && !Number.isFinite(branch_id)) return res.status(400).json({ error: 'Invalid branch_id.' });
+  try {
+    if (branch_id) {
+      const b = await db.query('SELECT 1 FROM branches WHERE id = $1 AND church_id = $2', [branch_id, req.church.id]);
+      if (!b.rows.length) return res.status(400).json({ error: 'Branch not in your church.' });
+    }
+    const r = await db.query(
+      `INSERT INTO staff (church_id, branch_id, email, name, role, status)
+       VALUES ($1, $2, $3, $4, $5, 'invited')
+       RETURNING id, email, name, role, status, branch_id, created_at`,
+      [req.church.id, branch_id, email, name, role],
+    );
+    logActivity({
+      church_id: req.church.id, branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'staff.invited', entity_type: 'staff', entity_id: r.rows[0].id,
+      summary: `Invited ${name || email} as ${role}`,
+    });
+    res.status(201).json({ staff: r.rows[0] });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'Someone with this email is already on the roster.' });
+    console.error('POST /api/church-admin/staff:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to invite staff.' });
+  }
+});
+
+app.put('/api/church-admin/staff/:id', churchAuth, requirePerm('staff', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  const role   = req.body?.role   != null ? String(req.body.role)   : null;
+  const status = req.body?.status != null ? String(req.body.status) : null;
+  const name   = req.body?.name   != null ? String(req.body.name).trim() || null : null;
+  const branch_id = req.body?.branch_id !== undefined
+    ? (req.body.branch_id == null ? null : parseInt(req.body.branch_id, 10))
+    : undefined;
+  if (role && !STAFF_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role.' });
+  if (status && !['active','invited','disabled'].includes(status)) return res.status(400).json({ error: 'Invalid status.' });
+  try {
+    if (branch_id) {
+      const b = await db.query('SELECT 1 FROM branches WHERE id = $1 AND church_id = $2', [branch_id, req.church.id]);
+      if (!b.rows.length) return res.status(400).json({ error: 'Branch not in your church.' });
+    }
+    const r = await db.query(
+      `UPDATE staff
+          SET role      = COALESCE($1, role),
+              status    = COALESCE($2, status),
+              name      = COALESCE($3, name),
+              branch_id = CASE WHEN $5::int = 1 THEN $4::int ELSE branch_id END
+        WHERE id = $6 AND church_id = $7
+        RETURNING id, email, name, role, status, branch_id, created_at`,
+      [role, status, name, branch_id ?? null, branch_id !== undefined ? 1 : 0, id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Staff not found.' });
+    logActivity({
+      church_id: req.church.id, branch_id: r.rows[0].branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'staff.updated', entity_type: 'staff', entity_id: r.rows[0].id,
+      summary: `Updated ${r.rows[0].name || r.rows[0].email} (${r.rows[0].role})`,
+    });
+    res.json({ staff: r.rows[0] });
+  } catch (e) {
+    console.error('PUT /api/church-admin/staff/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to update staff.' });
+  }
+});
+
+app.delete('/api/church-admin/staff/:id', churchAuth, requirePerm('staff', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    // Don't allow removing the church's own admin_email row — that would lock
+    // the church out of its own dashboard.
+    const r = await db.query(
+      `DELETE FROM staff
+        WHERE id = $1
+          AND church_id = $2
+          AND LOWER(email) <> LOWER((SELECT admin_email FROM churches WHERE id = $2))
+        RETURNING id, email, name`,
+      [id, req.church.id],
+    );
+    if (!r.rows.length) {
+      return res.status(409).json({ error: 'Cannot remove the church admin.' });
+    }
+    logActivity({
+      church_id: req.church.id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'staff.removed', entity_type: 'staff', entity_id: id,
+      summary: `Removed ${r.rows[0].name || r.rows[0].email}`,
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/church-admin/staff/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to remove staff.' });
+  }
+});
+
+// ── Activity feed ──────────────────────────────────────────────────────────
+// Cursor pagination: ?since_id=N returns rows with id > N (for "new since
+// last poll"). Without since_id, returns the most recent `limit` rows.
+app.get('/api/church-admin/activity', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+  const sinceId = req.query.since_id ? parseInt(req.query.since_id, 10) : null;
+  const entityType = req.query.entity_type ? String(req.query.entity_type) : null;
+  try {
+    const params = [req.church.id];
+    let where = 'WHERE church_id = $1';
+    if (req.activeBranchId) {
+      params.push(req.activeBranchId);
+      where += ` AND branch_id = $${params.length}`;
+    }
+    if (entityType) {
+      params.push(entityType);
+      where += ` AND entity_type = $${params.length}`;
+    }
+    let orderClause;
+    if (Number.isFinite(sinceId)) {
+      params.push(sinceId);
+      where += ` AND id > $${params.length}`;
+      orderClause = 'ORDER BY id ASC';   // ascending for "new since" so client can append
+    } else {
+      orderClause = 'ORDER BY id DESC';  // newest first for initial load
+    }
+    params.push(limit);
+    const r = await db.query(
+      `SELECT id, branch_id, actor_email, actor_name, action, entity_type, entity_id,
+              summary, metadata, created_at
+         FROM activity_log
+         ${where}
+         ${orderClause}
+         LIMIT $${params.length}`,
+      params,
+    );
+    res.json({ items: r.rows, count: r.rows.length });
+  } catch (e) {
+    console.error('GET /api/church-admin/activity:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load activity.' });
+  }
+});
+
+// ── Admin summary KPIs — Members / Attendance / Engagement / Donations ─────
+app.get('/api/church-admin/insights/admin-summary', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const cid = req.church.id;
+  const bid = req.activeBranchId;
+  const branchFilter = bid ? ' AND branch_id = $2' : '';
+  const params = bid ? [cid, bid] : [cid];
+  try {
+    const [members, attendance, engagement] = await Promise.all([
+      db.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM members
+             WHERE church_id = $1${branchFilter}
+               AND status IN ('member','first_timer')) AS members_total,
+           (SELECT COUNT(*)::int FROM members
+             WHERE church_id = $1${branchFilter}
+               AND status IN ('member','first_timer')
+               AND created_at >= date_trunc('month', NOW())) AS members_this_month,
+           (SELECT COUNT(*)::int FROM members
+             WHERE church_id = $1${branchFilter}
+               AND status IN ('member','first_timer')
+               AND created_at >= date_trunc('month', NOW() - INTERVAL '1 month')
+               AND created_at <  date_trunc('month', NOW())) AS members_last_month`,
+        params,
+      ),
+      db.query(
+        `SELECT
+           (SELECT COUNT(DISTINCT (class_id, lesson_number, student_email))::int FROM teacher_marks
+             WHERE church_id = $1${branchFilter}
+               AND awarded_at >= NOW() - INTERVAL '7 days')   AS attendance_this_week,
+           (SELECT COUNT(DISTINCT (class_id, lesson_number, student_email))::int FROM teacher_marks
+             WHERE church_id = $1${branchFilter}
+               AND awarded_at >= NOW() - INTERVAL '14 days'
+               AND awarded_at <  NOW() - INTERVAL '7 days')  AS attendance_last_week`,
+        params,
+      ),
+      db.query(
+        `SELECT
+           (SELECT COUNT(*)::int
+              FROM user_scores us
+              JOIN class_members cm ON cm.student_email = us.email
+              JOIN classes c        ON c.id = cm.class_id
+             WHERE c.church_id = $1${bid ? ' AND c.branch_id = $2' : ''}
+               AND us.completed_at >= NOW() - INTERVAL '7 days') AS lessons_7d,
+           (SELECT COUNT(*)::int
+              FROM user_scores us
+              JOIN class_members cm ON cm.student_email = us.email
+              JOIN classes c        ON c.id = cm.class_id
+             WHERE c.church_id = $1${bid ? ' AND c.branch_id = $2' : ''}
+               AND us.completed_at >= NOW() - INTERVAL '14 days'
+               AND us.completed_at <  NOW() - INTERVAL '7 days') AS lessons_prev_7d`,
+        params,
+      ),
+    ]);
+
+    // Donations: finance tables don't exist yet (item #9). Return zeros so
+    // the dashboard's KPI card renders without breaking.
+    res.json({
+      members: {
+        total:      members.rows[0].members_total,
+        this_month: members.rows[0].members_this_month,
+        last_month: members.rows[0].members_last_month,
+      },
+      attendance: {
+        this_week: attendance.rows[0].attendance_this_week,
+        last_week: attendance.rows[0].attendance_last_week,
+      },
+      engagement: {
+        lessons_7d:      engagement.rows[0].lessons_7d,
+        lessons_prev_7d: engagement.rows[0].lessons_prev_7d,
+      },
+      donations: { last_30d: 0, prev_30d: 0, note: 'finance tables not yet provisioned' },
+    });
+  } catch (e) {
+    console.error('GET /api/church-admin/insights/admin-summary:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load summary.' });
+  }
+});
+
+// ── Member growth — daily new + cumulative for the chart ───────────────────
+app.get('/api/church-admin/insights/member-growth', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const days = Math.min(parseInt(req.query.days, 10) || 180, 730);
+  const cid = req.church.id;
+  const bid = req.activeBranchId;
+  const branchFilter = bid ? ' AND branch_id = $3' : '';
+  const params = bid ? [String(days), cid, bid] : [String(days), cid];
+  try {
+    const daily = await db.query(
+      `SELECT date_trunc('day', created_at)::date AS day,
+              COUNT(*)::int AS joined
+         FROM members
+        WHERE church_id = $2${branchFilter}
+          AND status IN ('member','first_timer')
+          AND created_at >= NOW() - ($1 || ' days')::interval
+        GROUP BY day
+        ORDER BY day ASC`,
+      params,
+    );
+    // Compute the cumulative starting value (everything before the window).
+    const startTotal = await db.query(
+      `SELECT COUNT(*)::int AS total
+         FROM members
+        WHERE church_id = $2${branchFilter}
+          AND status IN ('member','first_timer')
+          AND created_at <  NOW() - ($1 || ' days')::interval`,
+      params,
+    );
+    let running = startTotal.rows[0].total;
+    const series = daily.rows.map((row) => {
+      running += row.joined;
+      return { day: row.day, joined: row.joined, cumulative: running };
+    });
+    res.json({ windowDays: days, startTotal: startTotal.rows[0].total, series });
+  } catch (e) {
+    console.error('GET /api/church-admin/insights/member-growth:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load member growth.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHURCH ADMIN — MEMBERS, FAMILIES, WORKER ASSIGNMENTS (PDF item #2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MEMBER_STATUSES   = ['visitor', 'first_timer', 'member', 'inactive'];
+const FAMILY_ROLES      = ['head', 'spouse', 'child', 'dependent', 'other'];
+
+// Returns the columns that are safe to round-trip to the client. Strips the
+// photo_base64 unless `withPhoto` is true (photos can be megabytes; keep the
+// list endpoint lean).
+function memberCols(withPhoto = false) {
+  return `m.id, m.church_id, m.branch_id, m.family_id, m.family_role,
+          m.first_name, m.last_name, m.email, m.phone,
+          m.gender, m.date_of_birth, m.marital_status, m.address,
+          m.occupation, m.status, m.joined_at, m.notes,
+          m.created_at, m.updated_at${withPhoto ? ', m.photo_base64' : ''}`;
+}
+
+// GET /api/church-admin/members
+//   ?status=visitor|first_timer|member|inactive|all  (default: all)
+//   ?branch_id=N            (otherwise inherited from x-branch-id header)
+//   ?family_id=N
+//   ?worker=true            (only members with at least one active assignment)
+//   ?q=search-term          (name / email / phone)
+//   ?limit=200 (max 500)
+app.get('/api/church-admin/members', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
+  const status = String(req.query.status || 'all').toLowerCase();
+  if (status !== 'all' && !MEMBER_STATUSES.includes(status))
+    return res.status(400).json({ error: 'Invalid status filter.' });
+
+  const params = [req.church.id];
+  let where = 'WHERE m.church_id = $1';
+
+  // Branch filter: explicit query param wins, otherwise inherit from header.
+  const branchId = req.query.branch_id != null
+    ? parseInt(req.query.branch_id, 10)
+    : req.activeBranchId;
+  if (Number.isFinite(branchId) && branchId) {
+    params.push(branchId);
+    where += ` AND m.branch_id = $${params.length}`;
+  }
+  if (status !== 'all') {
+    params.push(status);
+    where += ` AND m.status = $${params.length}`;
+  }
+  if (req.query.family_id) {
+    const fid = parseInt(req.query.family_id, 10);
+    if (Number.isFinite(fid)) {
+      params.push(fid);
+      where += ` AND m.family_id = $${params.length}`;
+    }
+  }
+  if (String(req.query.worker || '').toLowerCase() === 'true') {
+    where += ` AND EXISTS (SELECT 1 FROM worker_assignments wa
+                            WHERE wa.member_id = m.id AND wa.ended_at IS NULL)`;
+  }
+  if (req.query.q) {
+    const term = `%${String(req.query.q).toLowerCase()}%`;
+    params.push(term);
+    where += ` AND (
+      LOWER(m.first_name) LIKE $${params.length} OR
+      LOWER(m.last_name)  LIKE $${params.length} OR
+      LOWER(COALESCE(m.email, '')) LIKE $${params.length} OR
+      COALESCE(m.phone, '') LIKE $${params.length}
+    )`;
+  }
+  params.push(limit);
+  try {
+    const r = await db.query(
+      `SELECT ${memberCols(false)},
+              f.name AS family_name,
+              b.name AS branch_name,
+              (SELECT COUNT(*)::int FROM worker_assignments wa
+                WHERE wa.member_id = m.id AND wa.ended_at IS NULL) AS active_assignments
+         FROM members m
+         LEFT JOIN families f ON f.id = m.family_id
+         LEFT JOIN branches b ON b.id = m.branch_id
+         ${where}
+         ORDER BY m.created_at DESC
+         LIMIT $${params.length}`,
+      params,
+    );
+    res.json({ members: r.rows, count: r.rows.length });
+  } catch (e) {
+    console.error('GET /api/church-admin/members:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load members.' });
+  }
+});
+
+// GET /api/church-admin/members/:id — full detail including photo + assignments
+app.get('/api/church-admin/members/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    const [memberR, assignR, familyR] = await Promise.all([
+      db.query(
+        `SELECT ${memberCols(true)},
+                f.name AS family_name,
+                b.name AS branch_name
+           FROM members m
+           LEFT JOIN families f ON f.id = m.family_id
+           LEFT JOIN branches b ON b.id = m.branch_id
+          WHERE m.id = $1 AND m.church_id = $2`,
+        [id, req.church.id],
+      ),
+      db.query(
+        `SELECT id, department, role, started_at, ended_at, notes, created_at
+           FROM worker_assignments
+          WHERE member_id = $1
+          ORDER BY ended_at IS NULL DESC, started_at DESC`,
+        [id],
+      ),
+      // Siblings if this member has a family.
+      db.query(
+        `SELECT id, first_name, last_name, family_role
+           FROM members
+          WHERE family_id = (SELECT family_id FROM members WHERE id = $1)
+            AND family_id IS NOT NULL
+            AND id <> $1
+          ORDER BY family_role NULLS LAST, first_name`,
+        [id],
+      ),
+    ]);
+    if (!memberR.rows.length) return res.status(404).json({ error: 'Member not found.' });
+    res.json({
+      member:      memberR.rows[0],
+      assignments: assignR.rows,
+      family_members: familyR.rows,
+    });
+  } catch (e) {
+    console.error('GET /api/church-admin/members/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load member.' });
+  }
+});
+
+// Body fields accepted by POST and PUT. PUT uses COALESCE so missing fields
+// don't overwrite existing data.
+function memberBody(body) {
+  return {
+    first_name:     body.first_name != null ? String(body.first_name).trim() || null : undefined,
+    last_name:      body.last_name  != null ? String(body.last_name).trim()  || null : undefined,
+    email:          body.email      != null ? String(body.email).toLowerCase().trim() || null : undefined,
+    phone:          body.phone      != null ? String(body.phone).trim() || null : undefined,
+    gender:         body.gender     != null ? String(body.gender) || null : undefined,
+    date_of_birth:  body.date_of_birth || null,
+    marital_status: body.marital_status != null ? String(body.marital_status) || null : undefined,
+    address:        body.address != null ? String(body.address) || null : undefined,
+    occupation:     body.occupation != null ? String(body.occupation) || null : undefined,
+    status:         body.status != null ? String(body.status) : undefined,
+    joined_at:      body.joined_at || null,
+    notes:          body.notes != null ? String(body.notes) || null : undefined,
+    branch_id:      body.branch_id != null ? parseInt(body.branch_id, 10) : undefined,
+    family_id:      body.family_id !== undefined
+      ? (body.family_id == null ? null : parseInt(body.family_id, 10))
+      : undefined,
+    family_role:    body.family_role !== undefined
+      ? (body.family_role == null ? null : String(body.family_role))
+      : undefined,
+  };
+}
+
+app.post('/api/church-admin/members', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const b = memberBody(req.body || {});
+  if (!b.first_name) return res.status(400).json({ error: 'first_name is required.' });
+  if (b.status && !MEMBER_STATUSES.includes(b.status))
+    return res.status(400).json({ error: 'Invalid status.' });
+  if (b.family_role && !FAMILY_ROLES.includes(b.family_role))
+    return res.status(400).json({ error: 'Invalid family_role.' });
+
+  // Branch defaults to the active branch from the header, or HQ if none.
+  let branchId = b.branch_id;
+  if (!branchId) {
+    if (req.activeBranchId) {
+      branchId = req.activeBranchId;
+    } else {
+      const hq = await db.query(
+        `SELECT id FROM branches WHERE church_id = $1 AND is_headquarters = TRUE LIMIT 1`,
+        [req.church.id],
+      );
+      branchId = hq.rows[0]?.id || null;
+    }
+  } else {
+    const ok = await db.query('SELECT 1 FROM branches WHERE id = $1 AND church_id = $2', [branchId, req.church.id]);
+    if (!ok.rows.length) return res.status(400).json({ error: 'Branch not in your church.' });
+  }
+  if (b.family_id) {
+    const ok = await db.query('SELECT 1 FROM families WHERE id = $1 AND church_id = $2', [b.family_id, req.church.id]);
+    if (!ok.rows.length) return res.status(400).json({ error: 'Family not in your church.' });
+  }
+
+  try {
+    const r = await db.query(
+      `INSERT INTO members
+        (church_id, branch_id, family_id, family_role,
+         first_name, last_name, email, phone,
+         gender, date_of_birth, marital_status, address, occupation,
+         status, joined_at, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+               COALESCE($14,'member'), COALESCE($15, CURRENT_DATE), $16)
+       RETURNING ${memberCols(false).replace(/m\./g, '')}`,
+      [
+        req.church.id, branchId, b.family_id ?? null, b.family_role ?? null,
+        b.first_name, b.last_name ?? null, b.email ?? null, b.phone ?? null,
+        b.gender ?? null, b.date_of_birth, b.marital_status ?? null,
+        b.address ?? null, b.occupation ?? null,
+        b.status ?? null, b.joined_at, b.notes ?? null,
+      ],
+    );
+    const m = r.rows[0];
+    logActivity({
+      church_id: req.church.id, branch_id: m.branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'member.created', entity_type: 'member', entity_id: m.id,
+      summary: `Registered ${m.first_name} ${m.last_name || ''}`.trim() + ` as ${m.status}`,
+    });
+    res.status(201).json({ member: m });
+  } catch (e) {
+    console.error('POST /api/church-admin/members:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to create member.' });
+  }
+});
+
+app.put('/api/church-admin/members/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  const b = memberBody(req.body || {});
+  if (b.status && !MEMBER_STATUSES.includes(b.status))
+    return res.status(400).json({ error: 'Invalid status.' });
+  if (b.family_role && !FAMILY_ROLES.includes(b.family_role))
+    return res.status(400).json({ error: 'Invalid family_role.' });
+  if (b.branch_id) {
+    const ok = await db.query('SELECT 1 FROM branches WHERE id = $1 AND church_id = $2', [b.branch_id, req.church.id]);
+    if (!ok.rows.length) return res.status(400).json({ error: 'Branch not in your church.' });
+  }
+  if (b.family_id) {
+    const ok = await db.query('SELECT 1 FROM families WHERE id = $1 AND church_id = $2', [b.family_id, req.church.id]);
+    if (!ok.rows.length) return res.status(400).json({ error: 'Family not in your church.' });
+  }
+  try {
+    const r = await db.query(
+      `UPDATE members SET
+         first_name     = COALESCE($1, first_name),
+         last_name      = COALESCE($2, last_name),
+         email          = COALESCE($3, email),
+         phone          = COALESCE($4, phone),
+         gender         = COALESCE($5, gender),
+         date_of_birth  = COALESCE($6, date_of_birth),
+         marital_status = COALESCE($7, marital_status),
+         address        = COALESCE($8, address),
+         occupation     = COALESCE($9, occupation),
+         status         = COALESCE($10, status),
+         joined_at      = COALESCE($11, joined_at),
+         notes          = COALESCE($12, notes),
+         branch_id      = COALESCE($13, branch_id),
+         family_id      = CASE WHEN $15::int = 1 THEN $14::int ELSE family_id END,
+         family_role    = CASE WHEN $17::int = 1 THEN $16 ELSE family_role END
+       WHERE id = $18 AND church_id = $19
+       RETURNING ${memberCols(false).replace(/m\./g, '')}`,
+      [
+        b.first_name ?? null, b.last_name ?? null, b.email ?? null, b.phone ?? null,
+        b.gender ?? null, b.date_of_birth, b.marital_status ?? null,
+        b.address ?? null, b.occupation ?? null, b.status ?? null,
+        b.joined_at, b.notes ?? null, b.branch_id ?? null,
+        b.family_id ?? null, b.family_id !== undefined ? 1 : 0,
+        b.family_role ?? null, b.family_role !== undefined ? 1 : 0,
+        id, req.church.id,
+      ],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Member not found.' });
+    const m = r.rows[0];
+    logActivity({
+      church_id: req.church.id, branch_id: m.branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'member.updated', entity_type: 'member', entity_id: m.id,
+      summary: `Updated ${m.first_name} ${m.last_name || ''}`.trim(),
+    });
+    res.json({ member: m });
+  } catch (e) {
+    console.error('PUT /api/church-admin/members/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to update member.' });
+  }
+});
+
+app.delete('/api/church-admin/members/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    const r = await db.query(
+      `DELETE FROM members WHERE id = $1 AND church_id = $2
+       RETURNING id, first_name, last_name, branch_id`,
+      [id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Member not found.' });
+    const m = r.rows[0];
+    logActivity({
+      church_id: req.church.id, branch_id: m.branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'member.deleted', entity_type: 'member', entity_id: id,
+      summary: `Removed ${m.first_name} ${m.last_name || ''}`.trim(),
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/church-admin/members/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to delete member.' });
+  }
+});
+
+// Photo upload — accepts { photo_base64 } directly. The 10mb express.json limit
+// (already configured at the top of the file) is the upper bound. Sending null
+// clears the photo.
+app.post('/api/church-admin/members/:id/photo', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  const photo = req.body?.photo_base64;
+  if (photo != null && typeof photo !== 'string')
+    return res.status(400).json({ error: 'photo_base64 must be a data URL string or null.' });
+  try {
+    const r = await db.query(
+      `UPDATE members SET photo_base64 = $1
+        WHERE id = $2 AND church_id = $3
+        RETURNING id`,
+      [photo || null, id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Member not found.' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/church-admin/members/:id/photo:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to save photo.' });
+  }
+});
+
+// Convenience: visitor → first_timer → member promote shortcut.
+app.post('/api/church-admin/members/:id/promote', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    const r = await db.query(
+      `UPDATE members SET status = CASE status
+          WHEN 'visitor'     THEN 'first_timer'
+          WHEN 'first_timer' THEN 'member'
+          ELSE status
+        END
+        WHERE id = $1 AND church_id = $2
+        RETURNING id, first_name, last_name, status, branch_id`,
+      [id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Member not found.' });
+    const m = r.rows[0];
+    logActivity({
+      church_id: req.church.id, branch_id: m.branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'member.promoted', entity_type: 'member', entity_id: m.id,
+      summary: `${m.first_name} ${m.last_name || ''} promoted to ${m.status}`.trim(),
+    });
+    res.json({ member: m });
+  } catch (e) {
+    console.error('POST /api/church-admin/members/:id/promote:', e.code, e.message);
+    res.status(500).json({ error: 'Promote failed.' });
+  }
+});
+
+// ── Families ───────────────────────────────────────────────────────────────
+app.get('/api/church-admin/families', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const params = [req.church.id];
+  let where = 'WHERE f.church_id = $1';
+  if (req.activeBranchId) {
+    params.push(req.activeBranchId);
+    where += ` AND (f.branch_id = $${params.length} OR f.branch_id IS NULL)`;
+  }
+  try {
+    const r = await db.query(
+      `SELECT f.id, f.name, f.address, f.branch_id, f.notes, f.created_at,
+              b.name AS branch_name,
+              h.id AS head_id, h.first_name AS head_first, h.last_name AS head_last,
+              (SELECT COUNT(*)::int FROM members m WHERE m.family_id = f.id) AS member_count
+         FROM families f
+         LEFT JOIN branches b ON b.id = f.branch_id
+         LEFT JOIN members  h ON h.id = f.head_member_id
+         ${where}
+         ORDER BY f.name ASC`,
+      params,
+    );
+    res.json({ families: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/families:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load families.' });
+  }
+});
+
+app.get('/api/church-admin/families/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    const [fam, members] = await Promise.all([
+      db.query(
+        `SELECT f.*, b.name AS branch_name,
+                h.first_name AS head_first, h.last_name AS head_last
+           FROM families f
+           LEFT JOIN branches b ON b.id = f.branch_id
+           LEFT JOIN members  h ON h.id = f.head_member_id
+          WHERE f.id = $1 AND f.church_id = $2`,
+        [id, req.church.id],
+      ),
+      db.query(
+        `SELECT id, first_name, last_name, family_role, phone, email, status, joined_at
+           FROM members
+          WHERE family_id = $1
+          ORDER BY family_role NULLS LAST, first_name`,
+        [id],
+      ),
+    ]);
+    if (!fam.rows.length) return res.status(404).json({ error: 'Family not found.' });
+    res.json({ family: fam.rows[0], members: members.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/families/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load family.' });
+  }
+});
+
+app.post('/api/church-admin/families', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const name = String(req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name is required.' });
+  const address = req.body?.address != null ? String(req.body.address) || null : null;
+  const notes   = req.body?.notes   != null ? String(req.body.notes)   || null : null;
+  const branch_id = req.body?.branch_id != null
+    ? parseInt(req.body.branch_id, 10)
+    : (req.activeBranchId || null);
+  if (branch_id) {
+    const ok = await db.query('SELECT 1 FROM branches WHERE id = $1 AND church_id = $2', [branch_id, req.church.id]);
+    if (!ok.rows.length) return res.status(400).json({ error: 'Branch not in your church.' });
+  }
+  try {
+    const r = await db.query(
+      `INSERT INTO families (church_id, branch_id, name, address, notes)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name, address, branch_id, notes, created_at`,
+      [req.church.id, branch_id, name, address, notes],
+    );
+    logActivity({
+      church_id: req.church.id, branch_id: r.rows[0].branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'family.created', entity_type: 'family', entity_id: r.rows[0].id,
+      summary: `Created family ${r.rows[0].name}`,
+    });
+    res.status(201).json({ family: r.rows[0] });
+  } catch (e) {
+    console.error('POST /api/church-admin/families:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to create family.' });
+  }
+});
+
+app.put('/api/church-admin/families/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  const name    = req.body?.name    != null ? String(req.body.name).trim() : null;
+  const address = req.body?.address != null ? String(req.body.address) || null : null;
+  const notes   = req.body?.notes   != null ? String(req.body.notes)   || null : null;
+  const head_member_id = req.body?.head_member_id !== undefined
+    ? (req.body.head_member_id == null ? null : parseInt(req.body.head_member_id, 10))
+    : undefined;
+  try {
+    // If switching the head, also make sure that member belongs to this family.
+    if (head_member_id) {
+      const ok = await db.query(
+        `SELECT 1 FROM members WHERE id = $1 AND church_id = $2 AND family_id = $3`,
+        [head_member_id, req.church.id, id],
+      );
+      if (!ok.rows.length) return res.status(400).json({ error: 'Head must already belong to this family.' });
+    }
+    const r = await db.query(
+      `UPDATE families SET
+         name           = COALESCE($1, name),
+         address        = COALESCE($2, address),
+         notes          = COALESCE($3, notes),
+         head_member_id = CASE WHEN $5::int = 1 THEN $4::int ELSE head_member_id END
+       WHERE id = $6 AND church_id = $7
+       RETURNING id, name, address, branch_id, notes, head_member_id, created_at`,
+      [name, address, notes, head_member_id ?? null, head_member_id !== undefined ? 1 : 0, id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Family not found.' });
+    // Mark the new head with family_role='head' too.
+    if (head_member_id) {
+      await db.query(
+        `UPDATE members SET family_role = CASE WHEN id = $1 THEN 'head'
+                                              WHEN family_role = 'head' THEN NULL
+                                              ELSE family_role END
+          WHERE family_id = $2`,
+        [head_member_id, id],
+      );
+    }
+    res.json({ family: r.rows[0] });
+  } catch (e) {
+    console.error('PUT /api/church-admin/families/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to update family.' });
+  }
+});
+
+app.delete('/api/church-admin/families/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    // ON DELETE SET NULL handles members.family_id; clear family_role too.
+    await db.query(
+      `UPDATE members SET family_role = NULL WHERE family_id = $1`,
+      [id],
+    );
+    const r = await db.query(
+      `DELETE FROM families WHERE id = $1 AND church_id = $2 RETURNING id, name`,
+      [id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Family not found.' });
+    logActivity({
+      church_id: req.church.id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'family.deleted', entity_type: 'family', entity_id: id,
+      summary: `Deleted family ${r.rows[0].name}`,
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/church-admin/families/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to delete family.' });
+  }
+});
+
+// ── Worker / volunteer assignments ─────────────────────────────────────────
+// Lists all currently-active assignments grouped by department. Frontend
+// renders one section per department with the members serving there.
+app.get('/api/church-admin/workers', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const includeEnded = String(req.query.include_ended || 'false') === 'true';
+  const params = [req.church.id];
+  let where = `WHERE wa.church_id = $1${includeEnded ? '' : ' AND wa.ended_at IS NULL'}`;
+  if (req.activeBranchId) {
+    params.push(req.activeBranchId);
+    where += ` AND (wa.branch_id = $${params.length} OR wa.branch_id IS NULL)`;
+  }
+  try {
+    const r = await db.query(
+      `SELECT wa.id, wa.department, wa.role, wa.started_at, wa.ended_at, wa.notes,
+              wa.member_id, wa.branch_id,
+              m.first_name, m.last_name, m.email, m.phone,
+              b.name AS branch_name
+         FROM worker_assignments wa
+         JOIN members m  ON m.id = wa.member_id
+         LEFT JOIN branches b ON b.id = wa.branch_id
+         ${where}
+         ORDER BY wa.department ASC, wa.started_at DESC`,
+      params,
+    );
+    res.json({ assignments: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/workers:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load workers.' });
+  }
+});
+
+app.post('/api/church-admin/members/:id/assignments', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const memberId = parseInt(req.params.id, 10);
+  if (!Number.isFinite(memberId)) return res.status(400).json({ error: 'Invalid member id.' });
+  const department = String(req.body?.department || '').trim();
+  const role       = String(req.body?.role || 'member').trim() || 'member';
+  const startedAt  = req.body?.started_at || null;
+  const notes      = req.body?.notes != null ? String(req.body.notes) || null : null;
+  if (!department) return res.status(400).json({ error: 'department is required.' });
+  try {
+    const member = await db.query(
+      `SELECT id, branch_id FROM members WHERE id = $1 AND church_id = $2`,
+      [memberId, req.church.id],
+    );
+    if (!member.rows.length) return res.status(404).json({ error: 'Member not found.' });
+    const r = await db.query(
+      `INSERT INTO worker_assignments
+        (member_id, church_id, branch_id, department, role, started_at, notes)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_DATE), $7)
+       RETURNING id, department, role, started_at, ended_at, notes, member_id, branch_id, created_at`,
+      [memberId, req.church.id, member.rows[0].branch_id, department, role, startedAt, notes],
+    );
+    logActivity({
+      church_id: req.church.id, branch_id: member.rows[0].branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'worker.assigned', entity_type: 'worker', entity_id: r.rows[0].id,
+      summary: `Assigned member #${memberId} to ${department} (${role})`,
+    });
+    res.status(201).json({ assignment: r.rows[0] });
+  } catch (e) {
+    console.error('POST /api/church-admin/members/:id/assignments:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to assign.' });
+  }
+});
+
+app.put('/api/church-admin/assignments/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  const department = req.body?.department != null ? String(req.body.department).trim() : null;
+  const role       = req.body?.role       != null ? String(req.body.role).trim() : null;
+  const started_at = req.body?.started_at || null;
+  const ended_at   = req.body?.ended_at !== undefined ? (req.body.ended_at || null) : undefined;
+  const notes      = req.body?.notes != null ? String(req.body.notes) || null : null;
+  try {
+    const r = await db.query(
+      `UPDATE worker_assignments SET
+         department = COALESCE($1, department),
+         role       = COALESCE($2, role),
+         started_at = COALESCE($3, started_at),
+         ended_at   = CASE WHEN $5::int = 1 THEN $4::date ELSE ended_at END,
+         notes      = COALESCE($6, notes)
+       WHERE id = $7 AND church_id = $8
+       RETURNING id, department, role, started_at, ended_at, notes, member_id, branch_id, created_at`,
+      [department, role, started_at, ended_at ?? null, ended_at !== undefined ? 1 : 0, notes, id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Assignment not found.' });
+    res.json({ assignment: r.rows[0] });
+  } catch (e) {
+    console.error('PUT /api/church-admin/assignments/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to update assignment.' });
+  }
+});
+
+app.delete('/api/church-admin/assignments/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    const r = await db.query(
+      `DELETE FROM worker_assignments WHERE id = $1 AND church_id = $2
+       RETURNING id, member_id, department`,
+      [id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Assignment not found.' });
+    logActivity({
+      church_id: req.church.id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'worker.unassigned', entity_type: 'worker', entity_id: id,
+      summary: `Removed member #${r.rows[0].member_id} from ${r.rows[0].department}`,
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/church-admin/assignments/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to remove assignment.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHURCH ADMIN — SUNDAY SCHOOL & LEARNING (PDF item #7)
+// Read-only oversight of classes + students enrolled in the caller's church,
+// plus manual certificate issue/list/revoke.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CERTIFICATE_TYPES = ['completion', 'excellence', 'attendance', 'memorization', 'custom'];
+
+// GET /api/church-admin/learning/classes
+// Lists every class in the caller's church (or active branch) with the
+// teacher's name, enrollment count, most recent attendance, and lesson count.
+app.get('/api/church-admin/learning/classes', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const params = [req.church.id];
+  let where = 'WHERE c.church_id = $1';
+  if (req.activeBranchId) {
+    params.push(req.activeBranchId);
+    where += ` AND c.branch_id = $${params.length}`;
+  }
+  try {
+    const r = await db.query(
+      `SELECT c.id, c.name, c.category, c.invite_code, c.created_at,
+              c.teacher_email,
+              u.full_name AS teacher_name,
+              u.approval_status AS teacher_status,
+              (SELECT COUNT(*)::int FROM class_members cm WHERE cm.class_id = c.id)
+                AS enrollment,
+              (SELECT COUNT(DISTINCT (tm.lesson_number, tm.student_email))::int
+                 FROM teacher_marks tm WHERE tm.class_id = c.id) AS attendance_count,
+              (SELECT COUNT(DISTINCT tm.lesson_number)::int
+                 FROM teacher_marks tm WHERE tm.class_id = c.id) AS lessons_taught,
+              (SELECT MAX(tm.awarded_at) FROM teacher_marks tm WHERE tm.class_id = c.id)
+                AS last_active_at
+         FROM classes c
+         LEFT JOIN users u ON LOWER(u.email) = LOWER(c.teacher_email)
+         ${where}
+         ORDER BY c.created_at DESC`,
+      params,
+    );
+    res.json({ classes: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/learning/classes:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load classes.' });
+  }
+});
+
+// GET /api/church-admin/learning/students
+// Returns every student enrolled in any class of the caller's church, with
+// score/attendance aggregates. Used by the certificate-issue picker.
+//   ?q=...   — search by name/email
+//   ?limit=N — caps results (default 100, max 500)
+app.get('/api/church-admin/learning/students', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+  const term  = req.query.q ? `%${String(req.query.q).toLowerCase()}%` : null;
+  const params = [req.church.id];
+  if (req.activeBranchId) params.push(req.activeBranchId);
+  const branchClause = req.activeBranchId ? ` AND c.branch_id = $2` : '';
+  if (term) params.push(term);
+  const termIdx = params.length;
+  params.push(limit);
+  try {
+    const r = await db.query(
+      `SELECT DISTINCT cm.student_email,
+              COALESCE(u.full_name, cm.student_email)              AS student_name,
+              COUNT(DISTINCT cm.class_id)                          AS classes_count,
+              (SELECT COUNT(*)::int FROM user_scores us
+                 WHERE LOWER(us.email) = LOWER(cm.student_email))  AS lessons_completed,
+              (SELECT COALESCE(SUM(us.score), 0)::int FROM user_scores us
+                 WHERE LOWER(us.email) = LOWER(cm.student_email))  AS total_score,
+              (SELECT COUNT(*)::int FROM teacher_marks tm
+                 WHERE tm.church_id = $1
+                   AND LOWER(tm.student_email) = LOWER(cm.student_email))
+                                                                   AS marks_received,
+              (SELECT MAX(us.completed_at) FROM user_scores us
+                 WHERE LOWER(us.email) = LOWER(cm.student_email))  AS last_active
+         FROM class_members cm
+         JOIN classes c ON c.id = cm.class_id
+         LEFT JOIN users u ON LOWER(u.email) = LOWER(cm.student_email)
+        WHERE c.church_id = $1${branchClause}
+          ${term ? `AND (LOWER(cm.student_email) LIKE $${termIdx} OR LOWER(COALESCE(u.full_name, '')) LIKE $${termIdx})` : ''}
+        GROUP BY cm.student_email, u.full_name
+        ORDER BY lessons_completed DESC NULLS LAST, student_name ASC
+        LIMIT $${params.length}`,
+      params,
+    );
+    res.json({ students: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/learning/students:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load students.' });
+  }
+});
+
+// ── Certificates ───────────────────────────────────────────────────────────
+app.get('/api/church-admin/certificates', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const type        = req.query.type ? String(req.query.type) : null;
+  const q           = req.query.q    ? String(req.query.q).toLowerCase() : null;
+  const includeRevoked = String(req.query.include_revoked || 'false') === 'true';
+  const params = [req.church.id];
+  let where = 'WHERE church_id = $1';
+  if (req.activeBranchId) {
+    params.push(req.activeBranchId);
+    where += ` AND branch_id = $${params.length}`;
+  }
+  if (type) {
+    if (!CERTIFICATE_TYPES.includes(type))
+      return res.status(400).json({ error: 'Invalid certificate type.' });
+    params.push(type);
+    where += ` AND type = $${params.length}`;
+  }
+  if (q) {
+    params.push(`%${q}%`);
+    where += ` AND (LOWER(student_name) LIKE $${params.length} OR LOWER(student_email) LIKE $${params.length} OR LOWER(title) LIKE $${params.length})`;
+  }
+  if (!includeRevoked) where += ` AND revoked_at IS NULL`;
+  try {
+    const r = await db.query(
+      `SELECT id, student_email, student_name, type, title, body, context,
+              certificate_no, awarded_by, awarded_at, revoked_at, branch_id
+         FROM certificates
+         ${where}
+         ORDER BY awarded_at DESC
+         LIMIT 500`,
+      params,
+    );
+    res.json({ certificates: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/certificates:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load certificates.' });
+  }
+});
+
+app.get('/api/church-admin/certificates/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    const r = await db.query(
+      `SELECT c.*, ch.name AS church_name, b.name AS branch_name
+         FROM certificates c
+         JOIN churches ch ON ch.id = c.church_id
+         LEFT JOIN branches b ON b.id = c.branch_id
+        WHERE c.id = $1 AND c.church_id = $2`,
+      [id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Certificate not found.' });
+    res.json({ certificate: r.rows[0] });
+  } catch (e) {
+    console.error('GET /api/church-admin/certificates/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load certificate.' });
+  }
+});
+
+// CERT-2026-A1B2C3D4 — 8 random chars from a 32-char alphabet = ~10^12
+// distinct numbers per year, collision-resistant even with the UNIQUE
+// constraint acting as a hard guard. One INSERT, no transaction needed.
+function makeCertNo() {
+  const year = new Date().getFullYear();
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let rand = '';
+  for (let i = 0; i < 8; i++) rand += A[Math.floor(Math.random() * A.length)];
+  return `CERT-${year}-${rand}`;
+}
+
+app.post('/api/church-admin/certificates', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const {
+    student_email, student_name, type, title, body, context, awarded_at,
+  } = req.body || {};
+  if (!student_email || !isValidEmail(student_email))
+    return res.status(400).json({ error: 'A valid student_email is required.' });
+  if (!student_name?.trim())
+    return res.status(400).json({ error: 'student_name is required.' });
+  if (!type || !CERTIFICATE_TYPES.includes(type))
+    return res.status(400).json({ error: `type must be one of ${CERTIFICATE_TYPES.join(', ')}.` });
+  if (!title?.trim())
+    return res.status(400).json({ error: 'title is required.' });
+  try {
+    const r = await db.query(
+      `INSERT INTO certificates
+         (church_id, branch_id, student_email, student_name, type, title, body,
+          context, certificate_no, awarded_by, awarded_at)
+       VALUES ($1, $2, LOWER($3), $4, $5, $6, $7, $8::jsonb,
+               $9, $10, COALESCE($11::timestamptz, NOW()))
+       RETURNING *`,
+      [
+        req.church.id, req.activeBranchId, student_email, student_name.trim(),
+        type, title.trim(), body || null,
+        context ? JSON.stringify(context) : null,
+        makeCertNo(),
+        req.staff?.email || null, awarded_at || null,
+      ],
+    );
+    logActivity({
+      church_id: req.church.id, branch_id: req.activeBranchId,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'certificate.issued', entity_type: 'certificate', entity_id: r.rows[0].id,
+      summary: `Issued ${type} certificate to ${student_name.trim()}`,
+    });
+    res.status(201).json({ certificate: r.rows[0] });
+  } catch (e) {
+    console.error('POST /api/church-admin/certificates:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to issue certificate.' });
+  }
+});
+
+// Revoke (soft-delete by setting revoked_at). The certificate stays in the
+// table so audit history is preserved; the UI hides revoked ones unless
+// ?include_revoked=true is passed.
+app.delete('/api/church-admin/certificates/:id', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    const r = await db.query(
+      `UPDATE certificates SET revoked_at = NOW()
+        WHERE id = $1 AND church_id = $2 AND revoked_at IS NULL
+        RETURNING id, student_name, type, branch_id`,
+      [id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Certificate not found or already revoked.' });
+    const c = r.rows[0];
+    logActivity({
+      church_id: req.church.id, branch_id: c.branch_id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'certificate.revoked', entity_type: 'certificate', entity_id: id,
+      summary: `Revoked ${c.type} certificate for ${c.student_name}`,
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/church-admin/certificates/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to revoke certificate.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHURCH ADMIN — SUNDAY SCHOOL MARKS (PDF item #7, marks pipeline)
+// Collated view of every teacher_marks row written by the teacher mobile app.
+// All queries JOIN through classes for the church/branch filter — that way
+// rows that the teacher write path doesn't backfill with branch_id still get
+// scoped correctly via the parent class.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/church-admin/marks
+//   ?class_id=&lesson=&student_email=&mark_type=&awarded_by=
+//   ?since_id=N        — cursor for live polling (returns rows with id > N, ASC)
+//   ?limit=100         — capped at 500
+// Without since_id, returns the newest rows DESC for an initial load.
+app.get('/api/church-admin/marks', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+  const sinceId = req.query.since_id ? parseInt(req.query.since_id, 10) : null;
+  const params = [req.church.id];
+  let where = 'WHERE c.church_id = $1';
+  if (req.activeBranchId) {
+    params.push(req.activeBranchId);
+    where += ` AND c.branch_id = $${params.length}`;
+  }
+  if (req.query.class_id) {
+    const cid = parseInt(req.query.class_id, 10);
+    if (Number.isFinite(cid)) {
+      params.push(cid);
+      where += ` AND tm.class_id = $${params.length}`;
+    }
+  }
+  if (req.query.lesson) {
+    const ln = parseInt(req.query.lesson, 10);
+    if (Number.isFinite(ln)) {
+      params.push(ln);
+      where += ` AND tm.lesson_number = $${params.length}`;
+    }
+  }
+  if (req.query.student_email) {
+    params.push(String(req.query.student_email).toLowerCase());
+    where += ` AND LOWER(tm.student_email) = $${params.length}`;
+  }
+  if (req.query.mark_type) {
+    params.push(String(req.query.mark_type));
+    where += ` AND tm.mark_type = $${params.length}`;
+  }
+  if (req.query.awarded_by) {
+    params.push(String(req.query.awarded_by).toLowerCase());
+    where += ` AND LOWER(tm.awarded_by) = $${params.length}`;
+  }
+  let orderClause;
+  if (Number.isFinite(sinceId)) {
+    params.push(sinceId);
+    where += ` AND tm.id > $${params.length}`;
+    orderClause = 'ORDER BY tm.id ASC';   // ascending for "new since" so client appends
+  } else {
+    orderClause = 'ORDER BY tm.awarded_at DESC, tm.id DESC';
+  }
+  params.push(limit);
+  try {
+    const r = await db.query(
+      `SELECT tm.id, tm.class_id, tm.lesson_number, tm.student_email,
+              tm.mark_type, tm.points, tm.note, tm.awarded_by, tm.awarded_at,
+              c.name AS class_name, c.category AS class_category, c.invite_code,
+              c.branch_id, b.name AS branch_name,
+              COALESCE(u_student.full_name, tm.student_email) AS student_name,
+              COALESCE(u_teacher.full_name, tm.awarded_by)    AS teacher_name
+         FROM teacher_marks tm
+         JOIN classes c           ON c.id = tm.class_id
+         LEFT JOIN branches b     ON b.id = c.branch_id
+         LEFT JOIN users u_student ON LOWER(u_student.email) = LOWER(tm.student_email)
+         LEFT JOIN users u_teacher ON LOWER(u_teacher.email) = LOWER(tm.awarded_by)
+         ${where}
+         ${orderClause}
+         LIMIT $${params.length}`,
+      params,
+    );
+    res.json({ marks: r.rows, count: r.rows.length });
+  } catch (e) {
+    console.error('GET /api/church-admin/marks:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load marks.' });
+  }
+});
+
+// GET /api/church-admin/marks/summary
+// 7-day vs prev 7-day deltas, top student / top class / top teacher (30d),
+// mark-type breakdown (30d), recent activity day-by-day.
+app.get('/api/church-admin/marks/summary', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const params = [req.church.id];
+  let cFilter = 'c.church_id = $1';
+  if (req.activeBranchId) {
+    params.push(req.activeBranchId);
+    cFilter += ` AND c.branch_id = $${params.length}`;
+  }
+  try {
+    const [windowed, byType, topStudent, topClass, topTeacher, daily] = await Promise.all([
+      db.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+              WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '7 days')   AS marks_7d,
+           (SELECT COUNT(*)::int FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+              WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '14 days'
+                                AND tm.awarded_at <  NOW() - INTERVAL '7 days') AS marks_prev_7d,
+           (SELECT COALESCE(SUM(tm.points), 0)::int FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+              WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '7 days')  AS points_7d,
+           (SELECT COALESCE(SUM(tm.points), 0)::int FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+              WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '14 days'
+                                AND tm.awarded_at <  NOW() - INTERVAL '7 days') AS points_prev_7d,
+           (SELECT COUNT(DISTINCT tm.awarded_by)::int FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+              WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '30 days') AS active_teachers_30d`,
+        params,
+      ),
+      db.query(
+        `SELECT tm.mark_type AS type,
+                COUNT(*)::int AS count,
+                COALESCE(SUM(tm.points), 0)::int AS points
+           FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+          WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '30 days'
+          GROUP BY tm.mark_type
+          ORDER BY count DESC`,
+        params,
+      ),
+      db.query(
+        `SELECT tm.student_email AS email,
+                COALESCE(u.full_name, tm.student_email) AS name,
+                COUNT(*)::int AS marks,
+                COALESCE(SUM(tm.points), 0)::int AS points
+           FROM teacher_marks tm
+           JOIN classes c ON c.id = tm.class_id
+           LEFT JOIN users u ON LOWER(u.email) = LOWER(tm.student_email)
+          WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '30 days'
+          GROUP BY tm.student_email, u.full_name
+          ORDER BY points DESC, marks DESC
+          LIMIT 1`,
+        params,
+      ),
+      db.query(
+        `SELECT c.id, c.name, COUNT(*)::int AS marks,
+                COALESCE(SUM(tm.points), 0)::int AS points
+           FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+          WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '30 days'
+          GROUP BY c.id, c.name
+          ORDER BY marks DESC
+          LIMIT 1`,
+        params,
+      ),
+      db.query(
+        `SELECT tm.awarded_by AS email,
+                COALESCE(u.full_name, tm.awarded_by) AS name,
+                COUNT(*)::int AS marks
+           FROM teacher_marks tm
+           JOIN classes c ON c.id = tm.class_id
+           LEFT JOIN users u ON LOWER(u.email) = LOWER(tm.awarded_by)
+          WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '30 days'
+          GROUP BY tm.awarded_by, u.full_name
+          ORDER BY marks DESC
+          LIMIT 1`,
+        params,
+      ),
+      db.query(
+        `SELECT date_trunc('day', tm.awarded_at)::date AS day,
+                COUNT(*)::int AS marks,
+                COALESCE(SUM(tm.points), 0)::int AS points
+           FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+          WHERE ${cFilter} AND tm.awarded_at >= NOW() - INTERVAL '30 days'
+          GROUP BY day
+          ORDER BY day ASC`,
+        params,
+      ),
+    ]);
+    res.json({
+      windowed:   windowed.rows[0],
+      byType:     byType.rows,
+      topStudent: topStudent.rows[0] || null,
+      topClass:   topClass.rows[0]   || null,
+      topTeacher: topTeacher.rows[0] || null,
+      daily:      daily.rows,
+    });
+  } catch (e) {
+    console.error('GET /api/church-admin/marks/summary:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load summary.' });
+  }
+});
+
+// GET /api/church-admin/marks/by-class/:classId
+// Returns:
+//   class:    { id, name, category, invite_code, teacher_email, teacher_name }
+//   lessons:  [{ lesson_number, marks_count, total_points, last_awarded_at }]
+//   students: [{ email, name,
+//                lessons: { [lesson_number]: { marks, points, by_type: {...} } },
+//                totals:  { marks, points } }]
+app.get('/api/church-admin/marks/by-class/:classId', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const classId = parseInt(req.params.classId, 10);
+  if (!Number.isFinite(classId)) return res.status(400).json({ error: 'Invalid class id.' });
+  try {
+    // Authorisation: the class must belong to this church.
+    const cls = await db.query(
+      `SELECT c.id, c.name, c.category, c.invite_code, c.teacher_email,
+              u.full_name AS teacher_name
+         FROM classes c
+         LEFT JOIN users u ON LOWER(u.email) = LOWER(c.teacher_email)
+        WHERE c.id = $1 AND c.church_id = $2`,
+      [classId, req.church.id],
+    );
+    if (!cls.rows.length) return res.status(404).json({ error: 'Class not found.' });
+
+    const [lessonsR, membersR, marksR] = await Promise.all([
+      db.query(
+        `SELECT lesson_number,
+                COUNT(*)::int AS marks_count,
+                COALESCE(SUM(points), 0)::int AS total_points,
+                MAX(awarded_at) AS last_awarded_at
+           FROM teacher_marks
+          WHERE class_id = $1
+          GROUP BY lesson_number
+          ORDER BY lesson_number ASC`,
+        [classId],
+      ),
+      db.query(
+        `SELECT cm.student_email AS email,
+                COALESCE(u.full_name, cm.student_email) AS name,
+                cm.joined_at
+           FROM class_members cm
+           LEFT JOIN users u ON LOWER(u.email) = LOWER(cm.student_email)
+          WHERE cm.class_id = $1
+          ORDER BY name ASC`,
+        [classId],
+      ),
+      db.query(
+        `SELECT student_email, lesson_number, mark_type,
+                COUNT(*)::int AS marks,
+                COALESCE(SUM(points), 0)::int AS points
+           FROM teacher_marks
+          WHERE class_id = $1
+          GROUP BY student_email, lesson_number, mark_type
+          ORDER BY lesson_number, student_email`,
+        [classId],
+      ),
+    ]);
+
+    // Pivot into the students × lessons matrix shape the client expects.
+    const studentMap = new Map();
+    for (const m of membersR.rows) {
+      studentMap.set(m.email.toLowerCase(), {
+        email: m.email, name: m.name, joined_at: m.joined_at,
+        lessons: {}, totals: { marks: 0, points: 0 },
+      });
+    }
+    // Some marks may belong to students who left the class — include them
+    // anyway so admins see the full picture.
+    for (const m of marksR.rows) {
+      const key = m.student_email.toLowerCase();
+      if (!studentMap.has(key)) {
+        studentMap.set(key, {
+          email: m.student_email, name: m.student_email,
+          joined_at: null, lessons: {}, totals: { marks: 0, points: 0 },
+          left_class: true,
+        });
+      }
+      const s = studentMap.get(key);
+      const l = s.lessons[m.lesson_number] || { marks: 0, points: 0, by_type: {} };
+      l.marks  += m.marks;
+      l.points += m.points;
+      l.by_type[m.mark_type] = (l.by_type[m.mark_type] || 0) + m.points;
+      s.lessons[m.lesson_number] = l;
+      s.totals.marks  += m.marks;
+      s.totals.points += m.points;
+    }
+    const students = [...studentMap.values()]
+      .sort((a, b) => b.totals.points - a.totals.points);
+
+    res.json({
+      class:    cls.rows[0],
+      lessons:  lessonsR.rows,
+      students,
+    });
+  } catch (e) {
+    console.error('GET /api/church-admin/marks/by-class/:classId:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load class marks.' });
+  }
+});
+
+// GET /api/church-admin/marks/by-student?email=
+// Full scorecard for one student across all classes in this church.
+app.get('/api/church-admin/marks/by-student', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const email = String(req.query.email || '').toLowerCase().trim();
+  if (!email) return res.status(400).json({ error: 'email is required.' });
+  const params = [req.church.id, email];
+  let cFilter = 'c.church_id = $1';
+  if (req.activeBranchId) {
+    params.push(req.activeBranchId);
+    cFilter += ` AND c.branch_id = $${params.length}`;
+  }
+  try {
+    const [studentR, totalsR, byClassR, recentR, byTypeR] = await Promise.all([
+      db.query(
+        `SELECT u.email, COALESCE(u.full_name, u.email) AS name,
+                u.role, u.approval_status, u.created_at
+           FROM users u WHERE LOWER(u.email) = $1`,
+        [email],
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS marks,
+                COALESCE(SUM(tm.points), 0)::int AS points,
+                MIN(tm.awarded_at) AS first_awarded,
+                MAX(tm.awarded_at) AS last_awarded
+           FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+          WHERE ${cFilter} AND LOWER(tm.student_email) = $2`,
+        params,
+      ),
+      db.query(
+        `SELECT c.id AS class_id, c.name AS class_name, c.category,
+                COUNT(*)::int AS marks,
+                COALESCE(SUM(tm.points), 0)::int AS points,
+                COUNT(DISTINCT tm.lesson_number)::int AS lessons_covered,
+                MAX(tm.awarded_at) AS last_awarded
+           FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+          WHERE ${cFilter} AND LOWER(tm.student_email) = $2
+          GROUP BY c.id, c.name, c.category
+          ORDER BY points DESC`,
+        params,
+      ),
+      db.query(
+        `SELECT tm.id, tm.class_id, c.name AS class_name,
+                tm.lesson_number, tm.mark_type, tm.points, tm.note,
+                tm.awarded_by, tm.awarded_at,
+                COALESCE(u.full_name, tm.awarded_by) AS teacher_name
+           FROM teacher_marks tm
+           JOIN classes c ON c.id = tm.class_id
+           LEFT JOIN users u ON LOWER(u.email) = LOWER(tm.awarded_by)
+          WHERE ${cFilter} AND LOWER(tm.student_email) = $2
+          ORDER BY tm.awarded_at DESC
+          LIMIT 50`,
+        params,
+      ),
+      db.query(
+        `SELECT tm.mark_type AS type,
+                COUNT(*)::int AS count,
+                COALESCE(SUM(tm.points), 0)::int AS points
+           FROM teacher_marks tm JOIN classes c ON c.id = tm.class_id
+          WHERE ${cFilter} AND LOWER(tm.student_email) = $2
+          GROUP BY tm.mark_type
+          ORDER BY count DESC`,
+        params,
+      ),
+    ]);
+    res.json({
+      student: studentR.rows[0] || { email, name: email, role: null },
+      totals:  totalsR.rows[0],
+      byClass: byClassR.rows,
+      byType:  byTypeR.rows,
+      recent:  recentR.rows,
+    });
+  } catch (e) {
+    console.error('GET /api/church-admin/marks/by-student:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load student scorecard.' });
   }
 });
 
@@ -4974,6 +7104,386 @@ app.delete('/api/admin/books/:id/entries/:number', adminAuth, async (req, res) =
     res.status(500).json({ error: 'Failed to delete entry.' });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOCIAL MEDIA BROADCAST
+// Lets a church connect social accounts and push a single flyer + caption to
+// all of them at once. Facebook Page is fully wired; Instagram / X / WhatsApp
+// store credentials but defer real publishing to their adapter stubs in
+// services/socialPublishers.js (replace stub bodies when keys are ready).
+// ─────────────────────────────────────────────────────────────────────────────
+const SOCIAL_PLATFORMS = ['facebook', 'instagram', 'twitter', 'whatsapp'];
+
+// Strip tokens before returning an account row to the client.
+function safeAccount(row) {
+  if (!row) return row;
+  return {
+    id:            row.id,
+    platform:      row.platform,
+    account_label: row.account_label,
+    external_id:   row.external_id,
+    meta:          row.meta || {},
+    status:        row.status,
+    connected_by:  row.connected_by,
+    created_at:    row.created_at,
+    updated_at:    row.updated_at,
+    has_token:     !!row.access_token,
+  };
+}
+
+// GET /api/church-admin/social/accounts — what platforms are connected.
+app.get('/api/church-admin/social/accounts', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  try {
+    const r = await db.query(
+      `SELECT * FROM social_accounts WHERE church_id = $1 ORDER BY platform ASC`,
+      [req.church.id],
+    );
+    res.json({ accounts: r.rows.map(safeAccount) });
+  } catch (e) {
+    console.error('GET /api/church-admin/social/accounts:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load social accounts.' });
+  }
+});
+
+// POST /api/church-admin/social/accounts
+// Body: { platform, account_label, external_id?, access_token, refresh_token?, meta? }
+// Upserts the (church, platform) pair. We don't run OAuth here — the church
+// admin pastes credentials they obtained from each platform's dev portal.
+app.post('/api/church-admin/social/accounts', churchAuth, requirePerm('social', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const platform = String(req.body?.platform || '').toLowerCase().trim();
+  if (!SOCIAL_PLATFORMS.includes(platform)) {
+    return res.status(400).json({ error: `platform must be one of: ${SOCIAL_PLATFORMS.join(', ')}` });
+  }
+  const accessToken = String(req.body?.access_token || '').trim();
+  if (!accessToken) return res.status(400).json({ error: 'access_token is required.' });
+
+  const accountLabel = req.body?.account_label ? String(req.body.account_label).trim() : null;
+  const externalId   = req.body?.external_id   ? String(req.body.external_id).trim()   : null;
+  const refreshToken = req.body?.refresh_token ? String(req.body.refresh_token).trim() : null;
+  const meta         = req.body?.meta && typeof req.body.meta === 'object' ? req.body.meta : {};
+
+  try {
+    const r = await db.query(
+      `INSERT INTO social_accounts
+         (church_id, platform, account_label, external_id, access_token, refresh_token, meta, connected_by, status, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',NOW())
+       ON CONFLICT (church_id, platform) DO UPDATE
+         SET account_label = EXCLUDED.account_label,
+             external_id   = EXCLUDED.external_id,
+             access_token  = EXCLUDED.access_token,
+             refresh_token = EXCLUDED.refresh_token,
+             meta          = EXCLUDED.meta,
+             connected_by  = EXCLUDED.connected_by,
+             status        = 'active',
+             updated_at    = NOW()
+       RETURNING *`,
+      [req.church.id, platform, accountLabel, externalId, accessToken, refreshToken,
+       JSON.stringify(meta), req.staff?.email || null],
+    );
+    logActivity({
+      church_id: req.church.id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'social.connected', entity_type: 'social_account', entity_id: r.rows[0].id,
+      summary: `Connected ${platform}${accountLabel ? ` (${accountLabel})` : ''}`,
+    });
+    res.status(201).json({ account: safeAccount(r.rows[0]) });
+  } catch (e) {
+    console.error('POST /api/church-admin/social/accounts:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to save social account.' });
+  }
+});
+
+// DELETE /api/church-admin/social/accounts/:id — disconnect a platform.
+app.delete('/api/church-admin/social/accounts/:id', churchAuth, requirePerm('social', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id.' });
+  try {
+    const r = await db.query(
+      `DELETE FROM social_accounts WHERE id = $1 AND church_id = $2 RETURNING platform, account_label`,
+      [id, req.church.id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Account not found.' });
+    logActivity({
+      church_id: req.church.id,
+      actor_email: req.staff?.email, actor_name: req.staff?.name,
+      action: 'social.disconnected', entity_type: 'social_account', entity_id: id,
+      summary: `Disconnected ${r.rows[0].platform}`,
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/church-admin/social/accounts/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to disconnect account.' });
+  }
+});
+
+// GET /api/church-admin/social/posts — broadcast history (newest first).
+app.get('/api/church-admin/social/posts', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+  try {
+    const r = await db.query(
+      `SELECT id, branch_id, caption, platforms, results, status,
+              scheduled_at, published_at, created_by, created_at, image_mime,
+              CASE WHEN image_base64 IS NULL THEN NULL
+                   ELSE 'data:' || image_mime || ';base64,' || image_base64
+              END AS image_data_url
+         FROM social_posts
+        WHERE church_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2`,
+      [req.church.id, limit],
+    );
+    res.json({ posts: r.rows });
+  } catch (e) {
+    console.error('GET /api/church-admin/social/posts:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load post history.' });
+  }
+});
+
+// GET /api/social/media/:id — public flyer host. Returns the stored image
+// bytes so platforms that *require* a fetchable URL (Instagram, and the
+// faster path for Facebook) can pull the flyer without us having to upload
+// it as multipart. Anyone with the numeric id can fetch; flyers are public
+// announcements so that's intentional. Add a signed-token gate later if you
+// ever store something more sensitive.
+app.get('/api/social/media/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).send('Invalid id');
+  try {
+    const r = await db.query(
+      `SELECT image_base64, image_mime FROM social_posts WHERE id = $1`,
+      [id],
+    );
+    if (!r.rows.length || !r.rows[0].image_base64) return res.status(404).send('Not found');
+    const buf = Buffer.from(r.rows[0].image_base64, 'base64');
+    res.set('Content-Type',  r.rows[0].image_mime || 'image/jpeg');
+    res.set('Content-Length', buf.length);
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(buf);
+  } catch (e) {
+    console.error('GET /api/social/media/:id:', e.code, e.message);
+    res.status(500).send('Failed to load image');
+  }
+});
+
+// Resolve the public base URL the platforms will hit when fetching flyers.
+// Preference order:
+//   1. process.env.PUBLIC_API_URL — explicit, recommended for production.
+//   2. req.protocol + Host header — works in dev, falls down behind proxies.
+//   3. null — no public URL available; FB falls back to multipart, IG fails.
+function publicApiBase(req) {
+  if (process.env.PUBLIC_API_URL) return process.env.PUBLIC_API_URL.replace(/\/$/, '');
+  if (req) {
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const host  = req.get?.('host');
+    if (host) return `${proto}://${host}`;
+  }
+  return null;
+}
+
+// Internal dispatcher used by both the POST endpoint and the scheduled-post
+// worker. Takes a row already persisted to social_posts (status will be
+// flipped to 'publishing' before dispatch and 'published'|'partial'|'failed'
+// after) and runs every requested platform in parallel. Returns
+// { results, status } so the caller can shape its response.
+async function dispatchSocialPost({ postRow, churchId, branchId, actor, baseUrl, providedPublicUrl }) {
+  const platforms = Array.isArray(postRow.platforms)
+    ? postRow.platforms
+    : (typeof postRow.platforms === 'string' ? JSON.parse(postRow.platforms || '[]') : []);
+
+  // Mark as publishing so a concurrent worker run doesn't pick it up.
+  await db.query(
+    `UPDATE social_posts SET status = 'publishing', updated_at = NOW() WHERE id = $1`,
+    [postRow.id],
+  );
+
+  let accounts;
+  try {
+    const a = await db.query(
+      `SELECT * FROM social_accounts
+        WHERE church_id = $1 AND platform = ANY($2::text[]) AND status = 'active'`,
+      [churchId, platforms],
+    );
+    accounts = Object.fromEntries(a.rows.map(row => [row.platform, row]));
+  } catch (e) {
+    console.error('dispatchSocialPost (accounts):', e.code, e.message);
+    await db.query(
+      `UPDATE social_posts SET status = 'failed', updated_at = NOW() WHERE id = $1`,
+      [postRow.id],
+    );
+    return { results: {}, status: 'failed' };
+  }
+
+  // Compute the public flyer URL the publishers can hand to FB/IG. Prefer
+  // an explicitly-provided URL (caller is bringing their own host), else
+  // fall back to our public route.
+  const publicImageUrl = providedPublicUrl
+    || (postRow.image_base64 && baseUrl ? `${baseUrl}/api/social/media/${postRow.id}` : null);
+
+  const post = {
+    image_base64:     postRow.image_base64,
+    image_mime:       postRow.image_mime,
+    caption:          postRow.caption,
+    public_image_url: publicImageUrl,
+  };
+
+  const dispatches = await Promise.all(platforms.map(async (p) => {
+    const acct = accounts[p];
+    if (!acct) return [p, { ok: false, error: `${p} is not connected. Connect it first.` }];
+    try {
+      const out = await publishToPlatform(p, acct, post);
+      return [p, out];
+    } catch (err) {
+      return [p, { ok: false, error: err?.message || 'Publisher threw' }];
+    }
+  }));
+  const results = Object.fromEntries(dispatches);
+  const allOk   = dispatches.every(([, v]) => v?.ok);
+  const anyOk   = dispatches.some(([, v]) => v?.ok);
+  const finalStatus = allOk ? 'published' : anyOk ? 'partial' : 'failed';
+
+  try {
+    await db.query(
+      `UPDATE social_posts
+          SET results = $1, status = $2, published_at = NOW(), updated_at = NOW()
+        WHERE id = $3`,
+      [JSON.stringify(results), finalStatus, postRow.id],
+    );
+  } catch (e) {
+    console.error('dispatchSocialPost (update):', e.code, e.message);
+  }
+
+  logActivity({
+    church_id: churchId, branch_id: branchId || null,
+    actor_email: actor?.email, actor_name: actor?.name,
+    action: 'social.posted', entity_type: 'social_post', entity_id: postRow.id,
+    summary: `Broadcast flyer to ${platforms.join(', ')} (${finalStatus})`,
+    metadata: { platforms, status: finalStatus, scheduled: !!postRow.scheduled_at },
+  });
+
+  return { results, status: finalStatus };
+}
+
+// POST /api/church-admin/social/posts
+// Body: { image_base64, image_mime?, caption?, platforms:[...], scheduled_at?,
+//         public_image_url? }
+// If scheduled_at is in the future, the row is saved with status='scheduled'
+// and not published yet (the scheduler picks it up). Otherwise it dispatches
+// to every requested platform in parallel and stores per-platform results.
+app.post('/api/church-admin/social/posts', churchAuth, requirePerm('social', 'edit'), async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+
+  const imageBase64 = req.body?.image_base64 ? String(req.body.image_base64) : null;
+  const imageMime   = String(req.body?.image_mime || 'image/jpeg');
+  const caption     = req.body?.caption != null ? String(req.body.caption) : '';
+  const publicUrl   = req.body?.public_image_url ? String(req.body.public_image_url) : null;
+  const platforms   = Array.isArray(req.body?.platforms)
+    ? req.body.platforms.map(p => String(p).toLowerCase()).filter(p => SOCIAL_PLATFORMS.includes(p))
+    : [];
+  const scheduledAt = req.body?.scheduled_at ? new Date(req.body.scheduled_at) : null;
+
+  if (!imageBase64 && !publicUrl) {
+    return res.status(400).json({ error: 'Provide image_base64 or public_image_url.' });
+  }
+  if (!platforms.length) {
+    return res.status(400).json({ error: 'Select at least one platform.' });
+  }
+  if (scheduledAt && Number.isNaN(scheduledAt.getTime())) {
+    return res.status(400).json({ error: 'Invalid scheduled_at.' });
+  }
+
+  const isFuture = scheduledAt && scheduledAt.getTime() > Date.now() + 60_000;
+  const initialStatus = isFuture ? 'scheduled' : 'publishing';
+
+  let postRow;
+  try {
+    const r = await db.query(
+      `INSERT INTO social_posts
+         (church_id, branch_id, image_base64, image_mime, caption, platforms,
+          status, scheduled_at, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING id, status, scheduled_at, created_at, image_base64, image_mime, caption, platforms`,
+      [req.church.id, req.activeBranchId || null, imageBase64, imageMime, caption,
+       JSON.stringify(platforms), initialStatus,
+       scheduledAt && isFuture ? scheduledAt : null, req.staff?.email || null],
+    );
+    postRow = r.rows[0];
+  } catch (e) {
+    console.error('POST /api/church-admin/social/posts (insert):', e.code, e.message);
+    return res.status(500).json({ error: 'Failed to queue post.' });
+  }
+
+  // Scheduled in the future → just return; the worker will publish.
+  if (isFuture) {
+    return res.status(202).json({ post: { ...postRow, image_base64: undefined, platforms, results: {} } });
+  }
+
+  const baseUrl = publicApiBase(req);
+  const { results, status: finalStatus } = await dispatchSocialPost({
+    postRow,
+    churchId:  req.church.id,
+    branchId:  req.activeBranchId,
+    actor:     req.staff,
+    baseUrl,
+    providedPublicUrl: publicUrl,
+  });
+
+  res.status(201).json({
+    post: {
+      id:           postRow.id,
+      status:       finalStatus,
+      platforms,
+      results,
+      created_at:   postRow.created_at,
+      published_at: new Date().toISOString(),
+    },
+  });
+});
+
+// ─── Scheduled-post worker ──────────────────────────────────────────────────
+// Once a minute, look for due `scheduled` posts and publish them. The dispatch
+// helper flips status to `publishing` before fan-out, so even if this fires
+// on two replicas the first one wins (the second sees no rows).
+//
+// Disable with SOCIAL_SCHEDULER=off (useful for tests / one-off scripts).
+async function runSocialScheduler() {
+  if (process.env.SOCIAL_SCHEDULER === 'off') return;
+  let due;
+  try {
+    const r = await db.query(
+      `SELECT id, church_id, branch_id, image_base64, image_mime, caption,
+              platforms, scheduled_at, created_by
+         FROM social_posts
+        WHERE status = 'scheduled'
+          AND scheduled_at IS NOT NULL
+          AND scheduled_at <= NOW()
+        ORDER BY scheduled_at ASC
+        LIMIT 10`,
+    );
+    due = r.rows;
+  } catch (e) {
+    console.error('socialScheduler (select):', e.code, e.message);
+    return;
+  }
+  for (const row of due) {
+    try {
+      await dispatchSocialPost({
+        postRow:  row,
+        churchId: row.church_id,
+        branchId: row.branch_id,
+        actor:    { email: row.created_by, name: null },
+        baseUrl:  publicApiBase(null),
+        providedPublicUrl: null,
+      });
+    } catch (e) {
+      console.error('socialScheduler (dispatch):', row.id, e.message);
+    }
+  }
+}
+setInterval(runSocialScheduler, 60_000);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // START SERVER
