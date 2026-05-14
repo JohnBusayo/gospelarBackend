@@ -553,6 +553,13 @@ const initDb = async () => {
      )`,
     `CREATE INDEX IF NOT EXISTS idx_book_entries_book ON book_entries (book_id, entry_number)`,
 
+    // ── Library + Victory Month: per-row translations (PDF #11) ────────────
+    // JSONB shape: { yo: { title, subtitle, … }, ig: {...}, ha: {...} }.
+    // Empty/missing language keys fall back to the English columns at read
+    // time. Adding a new language is a no-op — no migration needed.
+    `ALTER TABLE books         ADD COLUMN IF NOT EXISTS translations JSONB NOT NULL DEFAULT '{}'::jsonb`,
+    `ALTER TABLE book_entries  ADD COLUMN IF NOT EXISTS translations JSONB NOT NULL DEFAULT '{}'::jsonb`,
+
     // Seed Sunday School inline so the Library is never empty on a fresh DB.
     // route_screen='HomeScreen' tells the mobile app to send taps into the
     // existing Sunday School flow (categories → units → lessons) rather than
@@ -576,14 +583,18 @@ const initDb = async () => {
     // are NOT seeded here — they're loaded from the bundled JS data the first
     // time the admin presses "Seed initial content" in the dashboard, which
     // POSTs into /api/admin/books/:slug/seed.
+    // Slug must match the JSON seed (backend/scripts/victory-month-2026.json)
+    // and the dashboard/mobile constants (VICTORY_BOOK_SLUG). The full
+    // metadata + 37 entries land via `node scripts/seed-victory-month.js`;
+    // this inline insert only ensures the row exists on a fresh DB.
     `INSERT INTO books (slug, title, subtitle, description, cover_emoji, accent_color, route_screen, sort_order, available)
      VALUES (
-       'victory-month-prayer',
-       'Victory Month Prayer',
-       '31-day prayer focus',
-       'Walk through 30 days of Spirit-led prayer, scripture meditation, and bold declarations. Each day pairs a focused theme with practical prayer points and a reflection prompt.',
-       '🕊️',
-       '#F97316',
+       'victory-month-2026',
+       'Victory Month Prayer Bulletin 2026',
+       '30-day prayer & fasting · Jan 2 – 31, 2026',
+       'GOFAMINT Victory Month Prayer Bulletin. Daily prayer focus, scripture meditation, intercession, plus group vigils for family / youth / women / men / general.',
+       '🙏',
+       '#DC2626',
        'VictoryMonthHome',
        2,
        TRUE
@@ -6786,7 +6797,7 @@ app.get('/api/books', async (req, res) => {
     const r = await db.query(`
       SELECT id, slug, title, subtitle, description, cover_image_url, cover_emoji,
              accent_color, route_screen, available, sort_order, language,
-             created_at, updated_at,
+             translations, created_at, updated_at,
              (SELECT COUNT(*) FROM book_entries WHERE book_id = books.id) AS entries_count
         FROM books
        ${includeUnavailable ? '' : 'WHERE available = TRUE'}
@@ -6899,13 +6910,20 @@ app.put('/api/admin/books/:id', adminAuth, async (req, res) => {
   const allowed = [
     'title', 'subtitle', 'description', 'cover_image_url', 'cover_emoji',
     'accent_color', 'route_screen', 'available', 'sort_order', 'language',
+    'translations',
   ];
   const sets   = ['updated_at = NOW()'];
   const params = [];
   for (const k of allowed) {
     if (Object.prototype.hasOwnProperty.call(req.body || {}, k)) {
-      params.push(req.body[k]);
-      sets.push(`${k} = $${params.length}`);
+      // translations is JSONB — stringify so we can cast in the SET clause.
+      if (k === 'translations') {
+        params.push(JSON.stringify(req.body[k] || {}));
+        sets.push(`${k} = $${params.length}::jsonb`);
+      } else {
+        params.push(req.body[k]);
+        sets.push(`${k} = $${params.length}`);
+      }
     }
   }
   if (params.length === 0) return res.status(400).json({ error: 'No updatable fields supplied.' });
@@ -6934,6 +6952,7 @@ app.post('/api/admin/books/:id/entries', adminAuth, async (req, res) => {
     focus, scripture_text, inspirational_message,
     prayer_points, special_intercession, hymn,
     discussion_questions, declarations, sort_order,
+    translations,
   } = req.body || {};
   if (!Number.isFinite(parseInt(entry_number, 10))) {
     return res.status(400).json({ error: 'entry_number required.' });
@@ -6944,9 +6963,9 @@ app.post('/api/admin/books/:id/entries', adminAuth, async (req, res) => {
         book_id, entry_number, entry_type, entry_date,
         focus, scripture_text, inspirational_message,
         prayer_points, special_intercession, hymn,
-        discussion_questions, declarations, sort_order
+        discussion_questions, declarations, sort_order, translations
       )
-      VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8::jsonb, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13)
+      VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8::jsonb, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14::jsonb)
       ON CONFLICT (book_id, entry_number, entry_type) DO UPDATE SET
         entry_date            = EXCLUDED.entry_date,
         focus                 = EXCLUDED.focus,
@@ -6957,7 +6976,8 @@ app.post('/api/admin/books/:id/entries', adminAuth, async (req, res) => {
         hymn                  = EXCLUDED.hymn,
         discussion_questions  = EXCLUDED.discussion_questions,
         declarations          = EXCLUDED.declarations,
-        sort_order            = EXCLUDED.sort_order
+        sort_order            = EXCLUDED.sort_order,
+        translations          = EXCLUDED.translations
       RETURNING *
     `, [
       bookId,
@@ -6973,6 +6993,7 @@ app.post('/api/admin/books/:id/entries', adminAuth, async (req, res) => {
       discussion_questions ? JSON.stringify(discussion_questions) : null,
       declarations ? JSON.stringify(declarations) : null,
       Number.isFinite(parseInt(sort_order, 10)) ? parseInt(sort_order, 10) : 100,
+      JSON.stringify(translations || {}),
     ]);
     res.json(r.rows[0]);
   } catch (e) {
@@ -7018,13 +7039,19 @@ app.post('/api/admin/books/:slug/seed', adminAuth, async (req, res) => {
       const allowed = [
         'title', 'subtitle', 'description', 'cover_image_url', 'cover_emoji',
         'accent_color', 'route_screen', 'available', 'sort_order', 'language',
+        'translations',
       ];
       const sets = ['updated_at = NOW()'];
       const params = [];
       for (const k of allowed) {
         if (Object.prototype.hasOwnProperty.call(meta, k)) {
-          params.push(meta[k]);
-          sets.push(`${k} = $${params.length}`);
+          if (k === 'translations') {
+            params.push(JSON.stringify(meta[k] || {}));
+            sets.push(`${k} = $${params.length}::jsonb`);
+          } else {
+            params.push(meta[k]);
+            sets.push(`${k} = $${params.length}`);
+          }
         }
       }
       if (params.length) {
@@ -7041,9 +7068,9 @@ app.post('/api/admin/books/:slug/seed', adminAuth, async (req, res) => {
           book_id, entry_number, entry_type, entry_date,
           focus, scripture_text, inspirational_message,
           prayer_points, special_intercession, hymn,
-          discussion_questions, declarations, sort_order
+          discussion_questions, declarations, sort_order, translations
         )
-        VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8::jsonb, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13)
+        VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8::jsonb, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14::jsonb)
         ON CONFLICT (book_id, entry_number, entry_type) DO UPDATE SET
           entry_date            = EXCLUDED.entry_date,
           focus                 = EXCLUDED.focus,
@@ -7054,7 +7081,8 @@ app.post('/api/admin/books/:slug/seed', adminAuth, async (req, res) => {
           hymn                  = EXCLUDED.hymn,
           discussion_questions  = EXCLUDED.discussion_questions,
           declarations          = EXCLUDED.declarations,
-          sort_order            = EXCLUDED.sort_order
+          sort_order            = EXCLUDED.sort_order,
+          translations          = EXCLUDED.translations
       `, [
         bookId,
         parseInt(e.entry_number, 10),
@@ -7069,6 +7097,7 @@ app.post('/api/admin/books/:slug/seed', adminAuth, async (req, res) => {
         e.discussion_questions ? JSON.stringify(e.discussion_questions) : null,
         e.declarations ? JSON.stringify(e.declarations) : null,
         Number.isFinite(parseInt(e.sort_order, 10)) ? parseInt(e.sort_order, 10) : 100,
+        JSON.stringify(e.translations || {}),
       ]);
       upserted++;
     }

@@ -8,7 +8,24 @@
     "accent_color": "#DC2626",
     "route_screen": "BookReader",
     "sort_order": 2,
-    "available": true
+    "available": true,
+    "translations": {
+      "yo": {
+        "title": "Ìwé Àdúrà Oṣù Ìṣẹ́gun 2026",
+        "subtitle": "Àdúrà àti àwẹ̀ ọjọ́ 30 · Oṣù Ṣẹ́rẹ́ 2 – 31, 2026",
+        "description": "Ìwé Àdúrà Oṣù Ìṣẹ́gun ti GOFAMINT North America. Ọ̀rọ̀: Àkókò Ìjí-pípadà Tòótọ́ àti Iṣẹ́ Àgbàyanu Ńlá. Àdúrà ojoojúmọ́, ìṣàrótiti lórí Ọ̀rọ̀ Ọlọ́run, àti ìbẹ̀bẹ̀ láti January 2 sí January 31, 2026, pẹ̀lú àwọn ìjọ́sìn alẹ́ ìdílé mẹ́ta, àti àwọn ìjọ́sìn alẹ́ àwọn ọ̀dọ́, obìnrin, ọkùnrin, àti àpapọ̀."
+      },
+      "ig": {
+        "title": "Akwụkwọ Ekpere Ọnwa Mmeri 2026",
+        "subtitle": "Ụbọchị 30 nke ekpere na ibu ọnụ · Jenụarị 2 – 31, 2026",
+        "description": "Akwụkwọ Ekpere Ọnwa Mmeri nke GOFAMINT North America. Isiokwu: Oge Mmụgharị nke Ezi Okwu na Ọrụ Dị Ebube. Ekpere ụbọchị niile, ntụgharị uche n'Akwụkwọ Nsọ, na arịrịọ site na Jenụarị 2 ruo Jenụarị 31, 2026, tinyere ekpere abalị atọ nke ezinụlọ, na nzukọ ekpere abalị ndị ntorobịa, ndị inyom, ndị ikom, na nke ọha."
+      },
+      "ha": {
+        "title": "Wallafar Addu'ar Watanin Nasara 2026",
+        "subtitle": "Kwana 30 na addu'a da azumi · Janairu 2 – 31, 2026",
+        "description": "Wallafar Addu'ar Watanin Nasara na GOFAMINT North America. Jigon: Lokacin Farfaɗo na Gaskiya da Manyan Aiyukan Allah. Yin addu'a kowace rana, tunani a kan Nassi, da roƙo daga Janairu 2 zuwa Janairu 31, 2026, da kuma tarurrukan addu'a na dare na iyali uku, da tarurruka don matasa, mata, maza, da na gabaɗaya."
+      }
+    }
   },
   "entries": [
     {
@@ -43,7 +60,48 @@
         "Father, we give You thanks in advance for all You will do in these 30 days of prayer and fasting.",
         "Lead more prayer of thanksgiving for God's goodness and love towards us in GOFAMINT, families, and individuals."
       ],
-      "special_intercession": "Psalms 84:2-8 — Receive strength to pray-through without wavering and weariness throughout the Victory Month."
+      "special_intercession": "Psalms 84:2-8 — Receive strength to pray-through without wavering and weariness throughout the Victory Month.",
+      "translations": {
+        "yo": {
+          "focus": "Ìdúpẹ́ fún ohun tí Ọlọ́run ti ṣe àti ohun tí Yóò ṣe ní 2026 àti lẹ́yìn náà.",
+          "scripture_text": "Sáàmù 40:1-11, 136",
+          "inspirational_message": "Bí a ṣe ń wọ àkókò ìjí-pípadà àti iṣẹ́ àgbàyanu ńlá yìí, ó ṣe pàtàkì pé ká bẹ̀rẹ̀ lọ́nà títọ́ pẹ̀lú ọkàn tí ó kún fún ìdúpẹ́. Ìjí-pípadà tòótọ́ kì í bẹ̀rẹ̀ pẹ̀lú iṣẹ́; ó bẹ̀rẹ̀ pẹ̀lú ọkàn tí ó mọ àánú Ọlọ́run. Jálẹ̀ Bíbélì, nígbàkígbà tí Ọlọ́run bá ń múra àwọn ènìyàn rẹ̀ sílẹ̀ fún ìsọdọ̀tun, ìlọsíwájú, àti iṣẹ́ àgbàyanu, Ó kọ́kọ́ pè wọ́n padà sí ìdúpẹ́, ìrẹ̀lẹ̀, àti ìbẹ̀rù. Gẹ́gẹ́ bí GOFAMINT káàkiri ayé, a gbà gbọ́ pé ìgbà yìí ni àkókò ìjí-pípadà ti ẹnìkọ̀ọ̀kan, ti ìjọ, àti ti ìran. A bẹ̀rẹ̀ ọjọ́ 30 wọ̀nyí kì í ṣe pẹ̀lú ìbéèrè, ṣùgbọ́n pẹ̀lú ìdúpẹ́ jíjinlẹ̀. Ìdúpẹ́ ń mú ọkàn wa rọ̀ pẹ̀lú Ọlọ́run, ó ń wẹ ojú ọ̀run mọ́, ó sì ń múra wa sílẹ̀ fún iṣẹ́ àgbàyanu tí ó ré kọjá agbára ènìyàn.",
+          "prayer_points": [
+            "Bàbá, a dúpẹ́ lọ́wọ́ Rẹ fún GOFAMINT káàkiri ayé, fún ìpamọ́, ìdàgbàsókè, àti ìtẹ̀síwájú nípa àánú Rẹ.",
+            "A dúpẹ́ fún gbogbo orílẹ̀-èdè, ìlú, àti àdúgbò níbi tí O ti gbin GOFAMINT gẹ́gẹ́ bí ìmọ́lẹ̀ àti ẹlẹ́rìí.",
+            "A dúpẹ́ fún ìjí-pípadà tí ó ti bẹ̀rẹ̀ tẹ́lẹ̀ ní àwọn ìpàdé wa, àwọn olórí, àti àwọn ọmọ ìjọ.",
+            "A dúpẹ́ fún àwọn ìṣẹ́gun tí ó ti kọjá, àwọn àdúrà tí O ti dáhùn, àti iṣẹ́ ẹ̀mí tí ń rán wa létí pé O ṣì ń ṣiṣẹ́.",
+            "Bàbá, a dúpẹ́ lọ́wọ́ Rẹ fún ìṣọ̀kan ti àfojúsùn, ẹ̀kọ́, àti ète jálẹ̀ GOFAMINT káàkiri ayé."
+          ],
+          "special_intercession": "Sáàmù 84:2-8 — Gba okun láti gbàdúrà títí dé òpin láìfọwọ́sowọ́pọ̀ àti àárẹ̀ jálẹ̀ Oṣù Ìṣẹ́gun."
+        },
+        "ig": {
+          "focus": "Ekele maka ihe Chineke meworo na ihe Ọ ga-eme na 2026 na n'ihu.",
+          "scripture_text": "Abụ Ọma 40:1-11, 136",
+          "inspirational_message": "Ka anyị na-abata n'oge mmụgharị na ọrụ dị ebube a, ọ dị mkpa ka anyị malite n'ụzọ ziri ezi site n'obi jupụtara n'ekele. Ezi mmụgharị anaghị amalite site n'omume; ọ na-amalite site n'obi nke na-amata amara Chineke. Site n'Akwụkwọ Nsọ niile, mgbe ọ bụla Chineke kwadebere ndị ya maka mmụgharị, mmụba, na ọrụ dị ebube, O bu ụzọ kpọghachi ha n'ekele, ịdị umeala n'obi, na ịsọpụrụ. Dị ka GOFAMINT n'ụwa niile, anyị kwenyere na nke a bụ oge mmụgharị nke onye ọ bụla, nke ọgbakọ, na nke ọgbọ. Anyị na-amalite ụbọchị 30 ndị a, ọ bụghị site n'arịrịọ, kama site n'ekele miri emi. Ekele na-eme ka obi anyị kwekọrịta Chineke, na-ehichapụ ikuku ime mmụọ, ma na-akwado anyị maka ọrụ dị ebube nke karịrị ike mmadụ.",
+          "prayer_points": [
+            "Nna, anyị na-ekele Gị maka GOFAMINT n'ụwa niile, maka nchekwa, mmụba, na nnọgide n'amara Gị.",
+            "Daalụ maka mba ọ bụla, obodo, na obodo nke I kụnyere GOFAMINT dị ka ìhè na onye akaebe.",
+            "Anyị na-ekele Gị maka mmụgharị nke amalitelarị na ọgbakọ anyị, ndị ndu, na ndị otu.",
+            "Daalụ maka mmeri ndị gara aga, ekpere a zara aza, na ọrụ ime mmụọ ndị na-echetara anyị na Ị ka na-arụ ọrụ.",
+            "Nna, anyị na-ekele Gị maka ịdị n'otu nke ọhụụ, ozizi, na nzube na GOFAMINT n'ụwa niile."
+          ],
+          "special_intercession": "Abụ Ọma 84:2-8 — Nata ike ikpe ekpere ruo ọgwụgwụ na-enweghị ụlọ na ike ọgwụgwụ n'ime Ọnwa Mmeri niile."
+        },
+        "ha": {
+          "focus": "Godiya ga abinda Allah Ya yi da abinda Zai yi a 2026 da gaba.",
+          "scripture_text": "Zabura 40:1-11, 136",
+          "inspirational_message": "Yayin da muke shiga wannan lokacin farkawa da manyan aiyukan Allah, yana da muhimmanci mu fara da kyau tare da zuciya cike da godiya. Farkawa ta gaskiya ba ta fara da ayyukan ba; tana farawa ne da zuciya da ta gane alherin Allah. Cikin dukan Nassi, duk lokacin da Allah ya shirya jama'arsa don sabuntawa, ƙaruwa, da manyan aiyuka, ya fara kiransu su koma ga godiya, tawali'u, da bauta. A matsayinmu na GOFAMINT a duk duniya, mun yi imani wannan lokaci ne na farkawa ga kowane mutum, ga ikilisiya, da kuma ga tsararraki. Muna farawa wadannan kwanaki 30 ba da buƙatu ba, sai da godiya mai zurfi. Godiya tana sa zukatanmu su daidaita da Allah, tana share yanayin ruhi, kuma tana shirya mu don manyan aiyuka da suka wuce ƙarfin mutum.",
+          "prayer_points": [
+            "Uba, mun gode maka don GOFAMINT a duk duniya, don kiyayewa, ci gaba, da daurewa ta wurin alherinka.",
+            "Mun gode maka don kowace ƙasa, gari, da al'umma da ka shuka GOFAMINT a matsayin haske da shaida.",
+            "Mun gode maka don farkawar da ta riga ta fara cikin tarurrukanmu, shugabanninmu, da membobinmu.",
+            "Mun gode maka don nasarorin da suka shude, addu'o'in da aka amsa, da ayyukan ruhi da suka tunamishe mu cewa kana aiki har yanzu.",
+            "Uba, mun gode maka don haɗin kai cikin hangen nesa, koyarwa, da manufa a cikin GOFAMINT a duk duniya."
+          ],
+          "special_intercession": "Zabura 84:2-8 — Karɓi ƙarfin yin addu'a har zuwa ƙarshe ba tare da rauni ko gajiya ba a duk Watanin Nasara."
+        }
+      }
     },
     {
       "entry_number": 2,
@@ -69,7 +127,18 @@
         "Spirit of Truth, expose and uproot every false doctrine and error in all our assemblies worldwide.",
         "Lord, baptize Your Church afresh with genuine love, a forgiving spirit, and supernatural unity."
       ],
-      "special_intercession": "Lord, ignite true revival in our hearts and keep us burning for You in season and out of season, for Your glory alone. Amen."
+      "special_intercession": "Lord, ignite true revival in our hearts and keep us burning for You in season and out of season, for Your glory alone. Amen.",
+      "translations": {
+        "yo": {
+          "focus": "Bí a ṣe ń borí àwọn ìdènà sí ìjí-pípadà tòótọ́ àti iṣẹ́ àgbàyanu ńlá nínú ìgbé-ayé wa àti ìjọ."
+        },
+        "ig": {
+          "focus": "Imeri ihe mgbochi nke mmụgharị nke ezi okwu na ọrụ dị ebube na ndụ anyị na ọgbakọ."
+        },
+        "ha": {
+          "focus": "Cin nasara a kan abubuwan da ke hana farkawa ta gaskiya da manyan aiyuka a rayuwarmu da ikilisiyarmu."
+        }
+      }
     },
     {
       "entry_number": 3,
@@ -96,7 +165,18 @@
         "Father, baptize me with a contagious passion that ignites revival in my family, Church and beyond.",
         "Lord Jesus, breathe Your resurrection power into every dying area of my life — my faith, my purpose, my passion."
       ],
-      "special_intercession": "Father, let personal revival be my passion and portion. Renew my heart by Your Spirit and make me a vessel fully yielded to You, where the works of the enemy have no place."
+      "special_intercession": "Father, let personal revival be my passion and portion. Renew my heart by Your Spirit and make me a vessel fully yielded to You, where the works of the enemy have no place.",
+      "translations": {
+        "yo": {
+          "focus": "Àdúrà fún ìjí-pípadà ti ara ẹni: Olúwa, sọ mí di olùṣe ìjí-pípadà tòótọ́ àti iṣẹ́ àgbàyanu."
+        },
+        "ig": {
+          "focus": "Ekpere maka mmụgharị onwe: Onyenwe anyị, mee m onye na-arụ ọrụ mmụgharị nke ezi okwu na ọrụ dị ebube."
+        },
+        "ha": {
+          "focus": "Addu'a don farkawa ta kanmu: Ya Ubangiji, ka mai da ni wakilin farkawa ta gaskiya da manyan aiyuka."
+        }
+      }
     },
     {
       "entry_number": 4,
@@ -126,7 +206,18 @@
         "Father, by your mercy, restore every lost glory and destiny of our family members.",
         "Father, rekindle the fire of revival in my family and let it burn continuously."
       ],
-      "special_intercession": "Lord, by Your mercy, dry the tears of every family on the verge of collapse. Strengthen the weary, lift the depressed, restore their spiritual passion, and realign their hearts to godly priorities."
+      "special_intercession": "Lord, by Your mercy, dry the tears of every family on the verge of collapse. Strengthen the weary, lift the depressed, restore their spiritual passion, and realign their hearts to godly priorities.",
+      "translations": {
+        "yo": {
+          "focus": "Àdúrà fún ìjí-pípadà ìdílé: Olúwa, mú ìdílé mi wọnú àkókò ìjí-pípadà tòótọ́ àti iṣẹ́ àgbàyanu ńlá."
+        },
+        "ig": {
+          "focus": "Ekpere maka mmụgharị ezinụlọ: Onyenwe anyị, kpọbata ezinụlọ m n'oge mmụgharị nke ezi okwu na ọrụ dị ebube."
+        },
+        "ha": {
+          "focus": "Addu'a don farkawar iyali: Ya Ubangiji, ka shigar da iyalina cikin lokacin farkawa ta gaskiya da manyan aiyuka."
+        }
+      }
     },
     {
       "entry_number": 5,
@@ -158,7 +249,18 @@
         "Lord, terminate every strange fire of human scheme against our pulpits.",
         "Father, raise end-time revivalists, reformers and Missionaries from among us."
       ],
-      "special_intercession": "Father, pour upon us fresh oil from heaven to ignite renewal and sustain genuine revival in every aspect of our Church worldwide."
+      "special_intercession": "Father, pour upon us fresh oil from heaven to ignite renewal and sustain genuine revival in every aspect of our Church worldwide.",
+      "translations": {
+        "yo": {
+          "focus": "Àdúrà fún ìjí-pípadà gbogbo ìjọ: Olúwa, fún ìṣílẹ̀ ìjí-pípadà tòótọ́ àti iṣẹ́ àgbàyanu ńlá nínú ìjọ wa."
+        },
+        "ig": {
+          "focus": "Ekpere maka mmụgharị ọgbakọ: Onyenwe anyị, nye anyị mmụgharị nke ezi okwu na ọrụ dị ebube n'ọgbakọ anyị."
+        },
+        "ha": {
+          "focus": "Addu'a don farkawar dukan ikilisiya: Ya Ubangiji, ka kawo farkawa ta gaskiya da manyan aiyuka a ikilisiyarmu."
+        }
+      }
     },
     {
       "entry_number": 6,
@@ -186,7 +288,18 @@
         "Father, remove every spirit of strife and division from our families and from this Church.",
         "Heavenly Father, let forgiveness open afresh the gate of miracles and kingdom exploits."
       ],
-      "special_intercession": "O Lord, baptize us with uncommon grace to forgive fully and walk in love, both in our homes and in every GOFAMINT assembly worldwide."
+      "special_intercession": "O Lord, baptize us with uncommon grace to forgive fully and walk in love, both in our homes and in every GOFAMINT assembly worldwide.",
+      "translations": {
+        "yo": {
+          "focus": "Bí a ṣe ń borí àìdáríjì nínú ìgbé-ayé wa, ìdílé, àti ìjọ."
+        },
+        "ig": {
+          "focus": "Imeri enweghị ndaghachi azụ na ndụ anyị, ezinụlọ, na ọgbakọ."
+        },
+        "ha": {
+          "focus": "Cin nasara a kan rashin gafarta a rayuwarmu, iyalanmu, da ikilisiyarmu."
+        }
+      }
     },
     {
       "entry_number": 7,
@@ -209,7 +322,18 @@
         "Lord, transform every department, ministry, unit, and venture into a lighthouse of revival and a center of spiritual reawakening.",
         "We pray prophetically that every leader and head of department shall receive clear vision, divine burden, wisdom, and courage for effective leadership."
       ],
-      "special_intercession": "Father, release fresh passion upon every leader, worker, and member to walk worthy of our calling across all departments, units, and ministries of the Church, to the glory of Your name."
+      "special_intercession": "Father, release fresh passion upon every leader, worker, and member to walk worthy of our calling across all departments, units, and ministries of the Church, to the glory of Your name.",
+      "translations": {
+        "yo": {
+          "focus": "Olúwa, jí iná ìjí-pípadà àti iṣẹ́ àgbàyanu sókè ní gbogbo apá, iṣẹ́-òjíṣẹ́, ìpín, àti ẹgbẹ́ ìjọ wa."
+        },
+        "ig": {
+          "focus": "Onyenwe anyị, kpalite ọkụ nke mmụgharị na ọrụ dị ebube na ngalaba niile, ọrụ ozi, otu, na ndị otu ọgbakọ anyị."
+        },
+        "ha": {
+          "focus": "Ya Ubangiji, ka sake hura wutar farkawa da manyan aiyuka a duk sashe, hidima, ƙungiyoyi, da bangarorin ikilisiyarmu."
+        }
+      }
     },
     {
       "entry_number": 8,
@@ -239,7 +363,18 @@
         "Heavenly Father, crown our leaders with favor, sound health, and divine backing for great exploits.",
         "Lord, transform our leaders into vessels who see through Your eyes and serve through Your love."
       ],
-      "special_intercession": "Father, make our leaders carriers of Your revelation and grace, empowering every member of our Church to remain focused and serve You with undivided loyalty, to the glory of Your name."
+      "special_intercession": "Father, make our leaders carriers of Your revelation and grace, empowering every member of our Church to remain focused and serve You with undivided loyalty, to the glory of Your name.",
+      "translations": {
+        "yo": {
+          "focus": "Àdúrà fún àwọn olórí wa: Olúwa, fi agbára fún àwọn olórí wa ní gbogbo ipele láti di olùṣe iṣẹ́ àgbàyanu."
+        },
+        "ig": {
+          "focus": "Ekpere maka ndị ndu anyị: Onyenwe anyị, nye ndị ndu anyị ike n'ọkwa niile ka ha bụrụ ndị na-arụ ọrụ dị irè."
+        },
+        "ha": {
+          "focus": "Addu'a don shugabanninmu: Ya Ubangiji, ka ƙarfafa shugabanninmu a kowane mataki su zama wakilai masu inganci."
+        }
+      }
     },
     {
       "entry_number": 9,
@@ -276,7 +411,18 @@
         "Father, baptize our leaders at all levels with wisdom, knowledge, and fresh anointing.",
         "Lord, grant our leaders grace, strength, and spiritual dynamism for excellent performance."
       ],
-      "special_intercession": "Father, unite us in worship and in fellowship, and let a season of refreshing from Your presence flow freely and unhindered among us, in Jesus' name."
+      "special_intercession": "Father, unite us in worship and in fellowship, and let a season of refreshing from Your presence flow freely and unhindered among us, in Jesus' name.",
+      "translations": {
+        "yo": {
+          "focus": "Ìjí-pípadà nínú ìsìn wa: Olúwa, fẹ́ ẹ̀mí Rẹ sí gbogbo ìsìn Ọjọ́ Sunday àti ti agbedeméjì ọ̀sẹ̀."
+        },
+        "ig": {
+          "focus": "Mmụgharị na ofufe anyị: Onyenwe anyị, kuo ume gị n'ofufe Ụka anyị niile na nke etiti izu."
+        },
+        "ha": {
+          "focus": "Farkawa cikin ibadarmu: Ya Ubangiji, ka huri sallar Lahadi da ta tsakiyar mako duka."
+        }
+      }
     },
     {
       "entry_number": 10,
@@ -311,7 +457,18 @@
         "God will impress our matters upon the hearts of those ordained to help us.",
         "This year, we shall not borrow, but we shall lend to nations.",
         "We receive divine ideas, strategies, and innovations that will catapult us into new realms of greatness."
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "Ìpolówó Ọkà Ìbáṣepọ̀ Ìlú Ìhìnrere."
+        },
+        "ig": {
+          "focus": "Mkpọ Mkpụrụ nke Nhazi Obodo Ozi Ọma."
+        },
+        "ha": {
+          "focus": "Yaƙin Iri don Haɗin Gwiwar Birnin Bishara."
+        }
+      }
     },
     {
       "entry_number": 11,
@@ -347,7 +504,18 @@
         "Let there be more than enough in every home.",
         "Let our tabernacles be filled with the voice of rejoicing and salvation."
       ],
-      "special_intercession": "Father, break every barrier to conjugal bliss in our churches. Establish honorable marriages and keep the marriage bed undefiled."
+      "special_intercession": "Father, break every barrier to conjugal bliss in our churches. Establish honorable marriages and keep the marriage bed undefiled.",
+      "translations": {
+        "yo": {
+          "focus": "Ìdásí àtọ̀runwá fún àwọn àpọ̀n àti àwọn tọkọtaya tí ń dúró."
+        },
+        "ig": {
+          "focus": "Nbiakwute nke Chineke maka ndị tozuru etozu na-amaghị di na nwunye na ndị di na nwunye na-eche."
+        },
+        "ha": {
+          "focus": "Sa hannun Allah ga manyan da ba su yi aure ba da ma'aurata masu jiran albarka."
+        }
+      }
     },
     {
       "entry_number": 12,
@@ -388,7 +556,18 @@
         ],
         "chorus": "Conquerors are we, thro' the blood, thro' the blood;\nGod will give us victory, thro' the blood, thro' the blood,\nThro' the Lamb for sinners slain,\nYet who lives and reigns again,\nMore than conquerors are we,\nMore than conquerors are we."
       },
-      "special_intercession": "Father, instill divine confidence in all our undertakings, release the Spirit of boldness, faith, and sound mind upon all GOFAMINT members, and empower us to advance fearlessly, flourish greatly, and fulfill destiny."
+      "special_intercession": "Father, instill divine confidence in all our undertakings, release the Spirit of boldness, faith, and sound mind upon all GOFAMINT members, and empower us to advance fearlessly, flourish greatly, and fulfill destiny.",
+      "translations": {
+        "yo": {
+          "focus": "Ààbò pípé, ìpèsè àti ìpamọ́ fún gbogbo ọmọ GOFAMINT káàkiri ayé ní 2026 àti lẹ́yìn náà."
+        },
+        "ig": {
+          "focus": "Nchedo zuru oke, nnyemaka na nchekwa maka ndị otu GOFAMINT niile n'ụwa niile na 2026 na n'ihu."
+        },
+        "ha": {
+          "focus": "Cikakken kariya, samarwa da kiyayewa ga dukan membobin GOFAMINT a duk duniya a 2026 da gaba."
+        }
+      }
     },
     {
       "entry_number": 13,
@@ -426,7 +605,18 @@
         "Prayer will deliver us.",
         "The gospel will advance significantly through us."
       ],
-      "special_intercession": "Father, deliver us from selective obedience. Align our hearts fully with Your will. Make us Your peculiar treasure. Make us obedient, fruitful, and pleasing unto You. Let GOFAMINT walk in divine order, spiritual authority, and kingdom impact."
+      "special_intercession": "Father, deliver us from selective obedience. Align our hearts fully with Your will. Make us Your peculiar treasure. Make us obedient, fruitful, and pleasing unto You. Let GOFAMINT walk in divine order, spiritual authority, and kingdom impact.",
+      "translations": {
+        "yo": {
+          "focus": "Ìdásí ìṣẹ̀mí ní àwọn àkókò ìṣòro nínú iṣẹ́-míṣọ̀nù wa káàkiri ayé."
+        },
+        "ig": {
+          "focus": "Nbiakwute nke ọrụ ebube n'oge ihe ike na ozi anyị n'ụwa niile."
+        },
+        "ha": {
+          "focus": "Sa hannun mu'ujiza a lokutan wahala cikin manufanmu a duk duniya."
+        }
+      }
     },
     {
       "entry_number": 14,
@@ -464,7 +654,18 @@
         "Only glory, provision, and triumph.",
         "Our season of more than enough is here. Hallelujah!"
       ],
-      "special_intercession": "Father, meet all our needs according to Your riches in glory by Christ Jesus. Arise and contend with every adversary standing against Your people. Let GOFAMINT walk in victory, abundance, peace, and divine rest."
+      "special_intercession": "Father, meet all our needs according to Your riches in glory by Christ Jesus. Arise and contend with every adversary standing against Your people. Let GOFAMINT walk in victory, abundance, peace, and divine rest.",
+      "translations": {
+        "yo": {
+          "focus": "Yíyanjú àwọn ìṣòro wa àti ìpèsè fún gbogbo àìní wa."
+        },
+        "ig": {
+          "focus": "Idozi nsogbu anyị na inye mkpa anyị niile."
+        },
+        "ha": {
+          "focus": "Warware matsalolinmu da biyan dukan bukatunmu."
+        }
+      }
     },
     {
       "entry_number": 15,
@@ -503,7 +704,18 @@
         "Purpose shall not be delayed.",
         "God shall be glorified through our lives."
       ],
-      "special_intercession": "Father, deliver us as a people from laziness, complacency, and the demon of procrastination. Impart unto us the grace for diligence, urgency, excellence, and faithful stewardship. Position us to fulfill destiny, glorify Your name, and impact our generation."
+      "special_intercession": "Father, deliver us as a people from laziness, complacency, and the demon of procrastination. Impart unto us the grace for diligence, urgency, excellence, and faithful stewardship. Position us to fulfill destiny, glorify Your name, and impact our generation.",
+      "translations": {
+        "yo": {
+          "focus": "Bí a ṣe ń borí àwọn ohun tí ń dín ayanmọ́ kù: ọ̀lẹ, àìmọ̀, ìṣòro, àti àfàjì."
+        },
+        "ig": {
+          "focus": "Imeri ihe na-akpa nzọrọ ọnọdụ: umengwụ, amaghị, akụkụ ụkwụ, na ịgbanahụ."
+        },
+        "ha": {
+          "focus": "Cin nasara a kan abubuwan da ke ɓata kaddara: kasala, jahilci, ƙarancin gwaninta, da jinkirtawa."
+        }
+      }
     },
     {
       "entry_number": 16,
@@ -536,7 +748,18 @@
         "Souls shall be saved.",
         "God shall be glorified."
       ],
-      "special_intercession": "Father, raise up lovers of missions and helpers of missionaries among our brethren. Stir hearts to pray, to give, to go, and to support. Let no missionary labor alone or fall by the wayside. May Nigeria witness a fresh wave of gospel light, revival, and transformation through our missionaries."
+      "special_intercession": "Father, raise up lovers of missions and helpers of missionaries among our brethren. Stir hearts to pray, to give, to go, and to support. Let no missionary labor alone or fall by the wayside. May Nigeria witness a fresh wave of gospel light, revival, and transformation through our missionaries.",
+      "translations": {
+        "yo": {
+          "focus": "Iṣẹ́ Míṣọ̀nù Inú-ilé: Ìfa-ìpẹ̀-kùn ńlá, ìyára àtọ̀runwá, ìpèsè ọ̀pọ̀lọpọ̀ àti ààbò áńgẹ́lì."
+        },
+        "ig": {
+          "focus": "Ozi Ụlọ: Mkpepu dị ukwuu, ngwa ngwa nke Chineke, nnyemaka zuru oke, na nchedo nke ndị mmụọ ozi."
+        },
+        "ha": {
+          "focus": "Aikin Bishara cikin Gida: Babban nasara, saurin Allah, samar da kowa, da kariyar mala'iku."
+        }
+      }
     },
     {
       "entry_number": 17,
@@ -571,7 +794,18 @@
         "The harvest shall be great.",
         "Christ shall be glorified."
       ],
-      "special_intercession": "Father, place the burden of Operation 2030 deeply upon our hearts. Help us to intercede consistently and sacrificially for this vision. Let no prayer fall to the ground, no effort be wasted, and no soul be lost. May Operation 2030 fulfill its purpose and bring glory to Your name."
+      "special_intercession": "Father, place the burden of Operation 2030 deeply upon our hearts. Help us to intercede consistently and sacrificially for this vision. Let no prayer fall to the ground, no effort be wasted, and no soul be lost. May Operation 2030 fulfill its purpose and bring glory to Your name.",
+      "translations": {
+        "yo": {
+          "focus": "Operation 2030: Iṣẹ́-míṣọ̀nù ńlá ti ìjàwèrè ọkàn, dídi ìjọ, àti ìmúgbára Ìjọba Ọlọ́run."
+        },
+        "ig": {
+          "focus": "Operation 2030: Ozi dị ukwuu nke ịzụta mkpụrụ obi, ịkụ ụlọ ụka, na ịkwalite Alaeze Chineke."
+        },
+        "ha": {
+          "focus": "Operation 2030: Babbar manufar yin yaƙin ruhi, dasa ikilisiyoyi, da ƙaƙwalwar Mulkin Allah."
+        }
+      }
     },
     {
       "entry_number": 18,
@@ -605,7 +839,18 @@
         "Africa shall be saved.",
         "Christ shall be glorified."
       ],
-      "special_intercession": "Lord of Harvest, send forth laborers into the harvest fields of Africa. Raise dependable men and women — Goers, Givers, and Groaners — whom You can rely upon. Let Africa be saved, transformed, and discipled for Your glory through GOFAMINT."
+      "special_intercession": "Lord of Harvest, send forth laborers into the harvest fields of Africa. Raise dependable men and women — Goers, Givers, and Groaners — whom You can rely upon. Let Africa be saved, transformed, and discipled for Your glory through GOFAMINT.",
+      "translations": {
+        "yo": {
+          "focus": "Olúwa, jẹ́ kí Áfríkà di ìkórè fún Ọ."
+        },
+        "ig": {
+          "focus": "Onyenwe anyị, mee ka Afrịka bụrụ ọrụ owuwe ihe ubi maka Gị."
+        },
+        "ha": {
+          "focus": "Ya Ubangiji, ka bar Afirka ta zama girbi gareka."
+        }
+      }
     },
     {
       "entry_number": 19,
@@ -640,7 +885,18 @@
         "GOFAMINT advances in his time like never before.",
         "God is glorified, always through him."
       ],
-      "special_intercession": "Father, we pray that our General Overseer will never miss Your mark. He shall finish well and finish strong. No tears, sorrow, or regret shall accompany his later years. His path shall shine brighter and brighter unto the perfect day."
+      "special_intercession": "Father, we pray that our General Overseer will never miss Your mark. He shall finish well and finish strong. No tears, sorrow, or regret shall accompany his later years. His path shall shine brighter and brighter unto the perfect day.",
+      "translations": {
+        "yo": {
+          "focus": "Olùṣàkóso Gbogbogbòò wa, Pastor E. O. Abina: Ìṣípayá ńlá, ìṣọ́na àìmọ̀dán, àti àtúnṣe."
+        },
+        "ig": {
+          "focus": "Onyeisi anyị, Pastor E. O. Abina: Mkpughe dị ukwuu, nduzi pụrụ iche, na nhazi ọzọ."
+        },
+        "ha": {
+          "focus": "Babban Mai Kula da mu, Pastor E. O. Abina: Babban hange, jagora ta musamman, da sake daidaitawa."
+        }
+      }
     },
     {
       "entry_number": 20,
@@ -680,7 +936,18 @@
         "The harvest is supernaturally gathered across the nations through GOFAMINT.",
         "Christ is glorified in and through us in GOFAMINT."
       ],
-      "special_intercession": "Father, make every member, worker, and minister in GOFAMINT a carrier of Your power in 2026. Let our assemblies become solution centers — places of healing, deliverance, salvation, and restoration. Confirm Your Word among us with signs following and let Your Kingdom advance mightily through us."
+      "special_intercession": "Father, make every member, worker, and minister in GOFAMINT a carrier of Your power in 2026. Let our assemblies become solution centers — places of healing, deliverance, salvation, and restoration. Confirm Your Word among us with signs following and let Your Kingdom advance mightily through us.",
+      "translations": {
+        "yo": {
+          "focus": "Agbára, ìgbàra, àti ìtara láti wàásù Jésù pẹ̀lú àmì àti iṣẹ́ ìyanu; mímú àwọn ọkàn wá sí Ìjọba Rẹ̀."
+        },
+        "ig": {
+          "focus": "Ike, obi ike, na ọkụ iji kwusaa Jisọs site n'ihe ịrịba ama na ọrụ ebube; iweta mkpụrụ obi n'Alaeze ya."
+        },
+        "ha": {
+          "focus": "Iko, ƙarfin hali, da ƙwazo don yin bisharar Yesu da alamu da mu'ujizai; kawowa raidoji cikin Mulkinsa."
+        }
+      }
     },
     {
       "entry_number": 21,
@@ -705,7 +972,18 @@
         "Father, we ask that your mercy will shield your people in Australia from all strange diseases and sudden death.",
         "Father, we ask for the overrunning fire of revival that will spread from GOFAMINT Australia to all the Pacific nations.",
         "Father, we pray for the multiplication of disciples in GOFAMINT Australia and an unstoppable move of your power."
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "GOFAMINT ní Yúróòpù, Éṣíà, àti Áúsírélíà."
+        },
+        "ig": {
+          "focus": "GOFAMINT na Europe, Asia, na Australia."
+        },
+        "ha": {
+          "focus": "GOFAMINT a Turai, Asiya, da Ostiraliya."
+        }
+      }
     },
     {
       "entry_number": 22,
@@ -750,7 +1028,18 @@
         "Our season of supernatural harvest is here.",
         "GOFAMINT advances in grace and glory, like never before."
       ],
-      "special_intercession": "Father, remove every imaginary and real boundary that is limiting this Mission. Dismantle every barricade standing against limitless growth and expansion. Let Your Church advance unhindered, unstoppable, and victorious."
+      "special_intercession": "Father, remove every imaginary and real boundary that is limiting this Mission. Dismantle every barricade standing against limitless growth and expansion. Let Your Church advance unhindered, unstoppable, and victorious.",
+      "translations": {
+        "yo": {
+          "focus": "Yíyọ àwọn ìdènà sí ìdàgbàsókè ìjọ tí kò ní àfọwọ́sí ní GOFAMINT."
+        },
+        "ig": {
+          "focus": "Iwepu ihe mgbochi mmụba ọgbakọ nke a na-apụghị ịkwụsị na GOFAMINT."
+        },
+        "ha": {
+          "focus": "Cire abubuwan da ke hana ci gaban ikilisiya wanda ba a iya tsayar da shi a cikin GOFAMINT."
+        }
+      }
     },
     {
       "entry_number": 23,
@@ -777,7 +1066,18 @@
         "Father, we ask for men and women that will sponsor, support, and stabilize the work of GOFAMINT Canada.",
         "Father, give us laborers with deep passion for lost souls in Canada.",
         "Father, raise workers committed to building your kingdom, and grant us your ordained allocation of our own building location."
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "GOFAMINT ní Àríwá àti Gúúsù Amẹ́ríkà."
+        },
+        "ig": {
+          "focus": "GOFAMINT na North America na South America."
+        },
+        "ha": {
+          "focus": "GOFAMINT a Arewacin Amurka da Kudancin Amurka."
+        }
+      }
     },
     {
       "entry_number": 24,
@@ -801,7 +1101,18 @@
         "Let the transformed lives of our youths and students reveal the reality of God and bring glory to the Father.",
         "Grant them grace to endure, walk in newness of life, and preserve the fruits of revival for generations to come."
       ],
-      "special_intercession": "Father, let the long-awaited impact of our youths and students begin to manifest across all our assemblies and institutions. Awaken a revived generation that loves holiness, burns for souls, and lives for Your glory."
+      "special_intercession": "Father, let the long-awaited impact of our youths and students begin to manifest across all our assemblies and institutions. Awaken a revived generation that loves holiness, burns for souls, and lives for Your glory.",
+      "translations": {
+        "yo": {
+          "focus": "Àwọn ọ̀dọ́ àti ọmọ ilé-ìwé GOFAMINT: kópa nínú ìjí-pípadà tòótọ́ kí o sì fa iṣẹ́ àgbàyanu ńlá."
+        },
+        "ig": {
+          "focus": "Ndị ntorobịa na ụmụ akwụkwọ GOFAMINT: keta na mmụgharị nke ezi okwu, dọta ọrụ dị ebube."
+        },
+        "ha": {
+          "focus": "Matasa da ɗalibai na GOFAMINT: shiga cikin farkawa ta gaskiya kuma jawo manyan aiyuka."
+        }
+      }
     },
     {
       "entry_number": 25,
@@ -838,7 +1149,18 @@
         "Let overflow become our portion — spiritually, materially, and financially.",
         "Lord, establish GOFAMINT as a model of Kingdom financing and godly stewardship."
       ],
-      "special_intercession": "Father, raise dependable financiers for GOFAMINT. Trust us with resources for Your vision. Let me be counted among those You will use to fund Your work faithfully and joyfully."
+      "special_intercession": "Father, raise dependable financiers for GOFAMINT. Trust us with resources for Your vision. Let me be counted among those You will use to fund Your work faithfully and joyfully.",
+      "translations": {
+        "yo": {
+          "focus": "Olúwa, gbé àwọn olówó tí ń ronú nípa ọ̀run, tí ń bọ̀wọ̀ fún Ọlọ́run àti tí ń ṣe sàásàn ní GOFAMINT."
+        },
+        "ig": {
+          "focus": "Onyenwe anyị, kpọlite ndị inye ego nke obi ha dị n'eluigwe, na-asọpụrụ Chineke, na-aguzosi ike na GOFAMINT."
+        },
+        "ha": {
+          "focus": "Ya Ubangiji, ka tashe masu hannu da shuni masu tunani na sama, masu girmama Allah a cikin GOFAMINT."
+        }
+      }
     },
     {
       "entry_number": 26,
@@ -867,7 +1189,18 @@
         "Bless the lives and families of every Executive Council member with blessings money can buy and cannot buy.",
         "Protect them from every danger, evil plot, and spiritual attack."
       ],
-      "special_intercession": "Father, keep the GOFAMINT Executive Council permanently on the firing line of soul winning. Let the heartbeat of the General Overseer — evangelism and harvest of souls — remain the heartbeat of the EXCO and the entire Mission. May GOFAMINT never lose its evangelistic fire."
+      "special_intercession": "Father, keep the GOFAMINT Executive Council permanently on the firing line of soul winning. Let the heartbeat of the General Overseer — evangelism and harvest of souls — remain the heartbeat of the EXCO and the entire Mission. May GOFAMINT never lose its evangelistic fire.",
+      "translations": {
+        "yo": {
+          "focus": "Àwọn ọmọ Ìgbìmọ̀ Aláṣẹ: pípín èrò àti ìtara fún ìjàwèrè ọkàn pẹ̀lú Olùṣàkóso Gbogbogbòò."
+        },
+        "ig": {
+          "focus": "Ndị otu Kansụl Nchịkọta: ikere ọkụ na uche ịzụta mkpụrụ obi anyị nke Onyeisi."
+        },
+        "ha": {
+          "focus": "Membobin Majalisar Zartarwa: tarayya cikin tunani da ƙwazo na yin yaƙin ruhi tare da Babban Mai Kula."
+        }
+      }
     },
     {
       "entry_number": 27,
@@ -897,7 +1230,18 @@
         "Surprise and satisfy them with good things in these latter days of their lives.",
         "Father, help them finish strong and finish well, enjoying Your love on earth and eternal fellowship in heaven."
       ],
-      "special_intercession": "Father, raise covenant helpers for all our retirees. Be their shield, comforter, and protector. Sustain them by Your grace until it pleases You to call them home in peace and glory."
+      "special_intercession": "Father, raise covenant helpers for all our retirees. Be their shield, comforter, and protector. Sustain them by Your grace until it pleases You to call them home in peace and glory.",
+      "translations": {
+        "yo": {
+          "focus": "Bíbọ̀wọ̀ fún àti àtìlẹ́yìn àwọn bàbá àti ìyá wa tí ó ti fẹ̀hìntì."
+        },
+        "ig": {
+          "focus": "Ịsọpụrụ na ịkwado ndị nna na ndị nne anyị ndị ezumike nká."
+        },
+        "ha": {
+          "focus": "Girmamawa da goyon bayan ubanninmu da iyayenmu mata da suka huta."
+        }
+      }
     },
     {
       "entry_number": 28,
@@ -923,7 +1267,18 @@
         "Arise, O God, and meet the specific needs of each member of these families.",
         "Make them shining examples of faith and living reflections of Your glory."
       ],
-      "special_intercession": "Father, let our founding General Overseer and all past heroes of faith never lack biological and spiritual children to carry on their divine mandate and vision. Preserve their legacy, multiply their seed, and let their impact continue from generation to generation."
+      "special_intercession": "Father, let our founding General Overseer and all past heroes of faith never lack biological and spiritual children to carry on their divine mandate and vision. Preserve their legacy, multiply their seed, and let their impact continue from generation to generation.",
+      "translations": {
+        "yo": {
+          "focus": "Àánú ńlá àti àtìlẹ́yìn àtọ̀runwá fún àwọn ìdílé Olùṣàkóso Gbogbogbòò ìpilẹ̀ àti àwọn olórí mìíràn."
+        },
+        "ig": {
+          "focus": "Amara dị ukwuu na nkwado nke Chineke maka ezinụlọ Onyeisi mbụ anyị na ndị ndu ndị ọzọ."
+        },
+        "ha": {
+          "focus": "Babban alheri da goyon bayan Allah ga iyalan Babban Mai Kula na farko da sauran shugabanni."
+        }
+      }
     },
     {
       "entry_number": 29,
@@ -960,7 +1315,18 @@
         "Nigeria shall fulfill her destiny.",
         "God bless Nigeria."
       ],
-      "special_intercession": "Father, put an end to genocide, bloodshed, and the destruction of lives and property in Nigeria. Let righteousness, peace, and justice prevail. Ignite a nationwide Jesus Revolution that transforms hearts, reforms systems, and restores hope."
+      "special_intercession": "Father, put an end to genocide, bloodshed, and the destruction of lives and property in Nigeria. Let righteousness, peace, and justice prevail. Ignite a nationwide Jesus Revolution that transforms hearts, reforms systems, and restores hope.",
+      "translations": {
+        "yo": {
+          "focus": "Náìjíríà yóò dìde lẹ́ẹ̀kan sí i: ìpè sí ìronúpìwàdà orílẹ̀-èdè àti ìdásí àtọ̀runwá."
+        },
+        "ig": {
+          "focus": "Naịjirịa ga-ebilite ọzọ: oku maka nchegharị obodo na nbiakwute nke Chineke."
+        },
+        "ha": {
+          "focus": "Nijeriya za ta sake tashi: kira don tuba ta ƙasa da sa hannun Allah."
+        }
+      }
     },
     {
       "entry_number": 30,
@@ -990,7 +1356,18 @@
         "Our joy is permanent.",
         "God is glorified, forever in and through us in GOFAMINT worldwide. Hallelujah!!!"
       ],
-      "special_intercession": "Father, by Your mercy, let this new season usher in a continual time of refreshing throughout 2026. Sustain the victories You have given us throughout this year and beyond. Let joy, peace, progress, and divine increase abound in our lives and in GOFAMINT as a whole."
+      "special_intercession": "Father, by Your mercy, let this new season usher in a continual time of refreshing throughout 2026. Sustain the victories You have given us throughout this year and beyond. Let joy, peace, progress, and divine increase abound in our lives and in GOFAMINT as a whole.",
+      "translations": {
+        "yo": {
+          "focus": "Ìgbádùn àkókò ìjí-pípadà ńlá àti iṣẹ́ àgbàyanu ńlá."
+        },
+        "ig": {
+          "focus": "Ịnụ ụtọ oge mmụgharị dị ukwuu na ọrụ dị ebube ukwuu."
+        },
+        "ha": {
+          "focus": "Jin daɗin lokacin babban farkawa da manyan aiyuka."
+        }
+      }
     },
     {
       "entry_number": 1,
@@ -1021,7 +1398,18 @@
         "How does the absence of a family altar (prayer, devotion, worship) open the door to household battles?",
         "What role do forgiveness and love play in securing victory over both natural challenges and spiritual battles?",
         "How can we, as Christian families, build resilience to withstand external pressures such as negative media, ungodly culture, and peer influence?"
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "Ìṣẹ́gun lórí àwọn ìṣòro ìdílé àti àwọn ìjà inú ilé."
+        },
+        "ig": {
+          "focus": "Mmeri n'elu nsogbu ezinụlọ na ọgụ ụlọ."
+        },
+        "ha": {
+          "focus": "Nasara a kan matsalolin iyali da fadan gida."
+        }
+      }
     },
     {
       "entry_number": 2,
@@ -1050,7 +1438,18 @@
         "What are the signs of losing our first love for God?",
         "How can we prepare for divine visitation in our time?",
         "In what ways can a revived believer be a blessing to his/her community?"
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "Sọ wá sọ̀tun lẹ́ẹ̀kan sí i, Olúwa, kí o sì sọ wá di ìbùkún fún ìran wa."
+        },
+        "ig": {
+          "focus": "Tugharia anyị ọzọ, Onyenwe anyị, mee anyị ngọzi nye ọgbọ anyị."
+        },
+        "ha": {
+          "focus": "Ka sake mai da mu, Ya Ubangiji, ka mai da mu albarka ga tsararranmu."
+        }
+      }
     },
     {
       "entry_number": 3,
@@ -1081,7 +1480,18 @@
         "What role does grace play in excelling in life and destiny?",
         "How can families balance prosperity with kingdom building?",
         "What practical steps can our family take to become a blessing to others?"
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "Ìdílé mi, dìde, tàn, kí o sì ṣe iṣẹ́ àgbàyanu ńlá."
+        },
+        "ig": {
+          "focus": "Ezinụlọ m, bilie, mụọ, ma rụọ ọrụ dị ebube."
+        },
+        "ha": {
+          "focus": "Iyalina, ka tashi, ka haskaka, ka aikata manyan aiyuka."
+        }
+      }
     },
     {
       "entry_number": 1,
@@ -1116,7 +1526,18 @@
         "Discuss the role of discipline and integrity in the process of destiny fulfillment.",
         "In what ways can peer pressure or modern media contribute to spiritual pollution?",
         "What practical steps can we take this year to guard our minds and spirits from worldly pollutions?"
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "Tú ọjọ́-iwájú rẹ sílẹ̀ kúrò nínú ọgbẹ ìgbé-ayé aláìbọ̀wọ̀ fún Ọlọ́run àti aláìṣe-déédéé."
+        },
+        "ig": {
+          "focus": "Tọhapụ ọdịnihu gị site na ọrịa ndụ enweghị Chineke na nke ada-eme nke oge a."
+        },
+        "ha": {
+          "focus": "'Yantar da makomarka daga ɓata na rayuwar marar Allah da makaurutawa ta zamani."
+        }
+      }
     },
     {
       "entry_number": 1,
@@ -1146,7 +1567,18 @@
         "What is the advantage of the word of knowledge and word of wisdom in the ministry of our ministers?",
         "What is the difference between manifestation of the gifts of the Spirit and levelling allegations against people on suspicion?",
         "Suggest other ways by which we can prevent Satanic activities in the church."
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "Tútù àwọn iṣẹ́ Sátánì kúrò nínú ìjọ àti ilé wa."
+        },
+        "ig": {
+          "focus": "Ihopu ọrụ Setan n'ọgbakọ na ụlọ anyị."
+        },
+        "ha": {
+          "focus": "Tumɓuke ayyukan Shaiɗan daga ikilisiya da gidajenmu."
+        }
+      }
     },
     {
       "entry_number": 1,
@@ -1189,7 +1621,18 @@
         "How does lack of family devotion affect the family? Whose responsibility is it to be the priest in the house?",
         "How does lack of provision and protection for the family affect the church and society?",
         "What other factors must we take heed of to fortify our homes for the advancement of God's Kingdom?"
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "Mímú àwọn ilé àti ìjọ wa lágbára lòdì sí gbogbo ọ̀nà ìfa ayé àti Sátánì, ìkọlù, àti ètè."
+        },
+        "ig": {
+          "focus": "Iwusi ụlọ anyị na ọgbakọ ike megide ụzọ niile nke uwa na Setan, mwakpo, na nzube."
+        },
+        "ha": {
+          "focus": "Ƙarfafa gidajenmu da ikilisiyoyinmu daga dukan hanyoyin jaraba na duniya da na Shaiɗan, hare-hare, da makirci."
+        }
+      }
     },
     {
       "entry_number": 1,
@@ -1227,7 +1670,29 @@
         "What is the 'big picture' that God has on the issue of our strategic positioning according to Zechariah 1:17?",
         "Discuss the importance of possessing the seven mountains of influence (Religion, Family, Education, Science/Technology, Commerce/Industry, Politics/Government, Arts/Entertainment) and submitting them to God.",
         "How can we download the seven realms obtained for us by our Lord Jesus Christ in Revelation 5:12 by His seven-fold Spirit operation in Isaiah 11:2?"
-      ]
+      ],
+      "translations": {
+        "yo": {
+          "focus": "Yíyanjú àwọn ìdènà tó hàn àti tí ó pamọ́ tó ń dí wa lọ́wọ́ ìjí-pípadà ńlá àti iṣẹ́ àgbàyanu."
+        },
+        "ig": {
+          "focus": "Idozi ihe mgbochi pụtara ìhè na ndị zoro ezo na-egbochi anyị mmụgharị dị ukwuu na ọrụ dị ebube."
+        },
+        "ha": {
+          "focus": "Magance abubuwa masu fitowa da na ɓoye da ke hana mu farkawa mai girma da manyan aiyuka."
+        }
+      }
     }
-  ]
+  ],
+  "_translation_status": {
+    "generated_at": "2026-05-14T03:51:14.431Z",
+    "coverage": {
+      "book_metadata": "yo, ig, ha — full (title, subtitle, description)",
+      "day_1": "yo, ig, ha — full (focus, scripture, message, prayer_points, intercession)",
+      "daily_2_through_30": "yo, ig, ha — focus only",
+      "vigils": "yo, ig, ha — focus only",
+      "remaining_fields": "inspirational_message + prayer_points + scripture_text + special_intercession for days 2-30 and all vigils — to be filled in by the language committee via the maindashboard Victory Month editor"
+    },
+    "note": "Translations supplied by an AI-assisted starter pass. They are intended as a working baseline and should be reviewed by native Yorùbá / Igbo / Hausa speakers before publishing. Add or correct any field directly in the admin dashboard — translations round-trip through the POST /api/admin/books/:id/entries endpoint and persist to the book_entries.translations JSONB column."
+  }
 }
