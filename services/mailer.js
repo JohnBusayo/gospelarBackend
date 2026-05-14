@@ -37,13 +37,14 @@ function getConfig() {
  */
 async function sendMail({ to, subject, html, text, from }) {
   const cfg = getConfig();
+  const finalFrom = from || cfg.from;
   if (!cfg.apiKey) {
     console.warn('[mailer] RESEND_API_KEY not set — skipping email to', to, '(' + subject + ')');
-    return { ok: false, error: 'no_api_key' };
+    return { ok: false, error: 'RESEND_API_KEY is not set on the server.', error_code: 'no_api_key', from: finalFrom };
   }
   if (!to || !subject || (!html && !text)) {
     console.warn('[mailer] missing to/subject/body — refusing to send');
-    return { ok: false, error: 'missing_fields' };
+    return { ok: false, error: 'Missing to/subject/body.', error_code: 'missing_fields', from: finalFrom };
   }
   // Resend requires either text or html; we prefer html and synthesise a
   // plain-text version when the caller didn't provide one.
@@ -57,7 +58,7 @@ async function sendMail({ to, subject, html, text, from }) {
         'Content-Type':  'application/json',
       },
       body: JSON.stringify({
-        from:    from || cfg.from,
+        from:    finalFrom,
         to:      Array.isArray(to) ? to : [to],
         subject,
         html,
@@ -66,13 +67,36 @@ async function sendMail({ to, subject, html, text, from }) {
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
-      console.warn('[mailer] Resend error', r.status, data?.message || data?.error || '(no message)');
-      return { ok: false, error: data?.message || `HTTP ${r.status}` };
+      // Surface every clue Resend gives us — domain not verified, recipient
+      // restricted in sandbox mode, bad from address, etc. The full payload
+      // is what the admin needs to fix it.
+      const detail =
+        data?.message
+        || data?.error
+        || (typeof data === 'string' ? data : null)
+        || `HTTP ${r.status}`;
+      console.warn(
+        '[mailer] Resend error', r.status,
+        '\n  from   :', finalFrom,
+        '\n  to     :', Array.isArray(to) ? to.join(', ') : to,
+        '\n  subject:', subject,
+        '\n  body   :', JSON.stringify(data),
+      );
+      return {
+        ok:          false,
+        error:       detail,
+        error_code:  data?.name || `http_${r.status}`,
+        status:      r.status,
+        provider:    'resend',
+        provider_response: data,
+        from:        finalFrom,
+      };
     }
-    return { ok: true, id: data.id };
+    console.log('[mailer] sent', { id: data.id, to, from: finalFrom, subject });
+    return { ok: true, id: data.id, from: finalFrom };
   } catch (err) {
     console.warn('[mailer] network error:', err.message);
-    return { ok: false, error: err.message };
+    return { ok: false, error: err.message, error_code: 'network_error', from: finalFrom };
   }
 }
 
@@ -101,6 +125,10 @@ const PRIMARY_BG = '#EFF6FF';
 const TEXT_DARK  = '#0F172A';
 const TEXT_MUTED = '#64748B';
 const BORDER     = '#E2E8F0';
+// Public URL the email's <img> points at. Overridable via env so local dev
+// can swap in a tunnelled URL if needed. The file is served by the
+// gospelar-landing repo (public/logo.png → https://gospelar.com/logo.png).
+const LOGO_URL   = process.env.MAIL_LOGO_URL || 'https://gospelar.com/logo.png';
 
 // Shared shell — table-based layout for email-client compatibility.
 function shell({ heading, body, ctaUrl, ctaText }) {
@@ -110,7 +138,10 @@ function shell({ heading, body, ctaUrl, ctaText }) {
     <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#FFFFFF;border:1px solid ${BORDER};border-radius:16px;overflow:hidden">
       <tr><td style="padding:24px 28px;border-bottom:1px solid ${BORDER}">
         <table role="presentation" width="100%"><tr>
-          <td style="font-size:20px;font-weight:800;letter-spacing:-0.3px">⛪ ${BRAND}</td>
+          <td style="font-size:20px;font-weight:800;letter-spacing:-0.3px">
+            <img src="${LOGO_URL}" alt="" width="28" height="28" style="vertical-align:middle;display:inline-block;margin-right:10px;border-radius:6px;border:0;outline:none;text-decoration:none"/>
+            <span style="vertical-align:middle">${BRAND}</span>
+          </td>
           <td align="right" style="font-size:11px;color:${TEXT_MUTED};letter-spacing:1.2px;font-weight:700;text-transform:uppercase">Church Leader</td>
         </tr></table>
       </td></tr>
