@@ -43,10 +43,14 @@ app.use(require('./routes/payments'));
 app.use(require('./routes/quarterInfo'));
 app.use(require('./routes/teacher'));
 app.use(require('./routes/books'));
+app.use(require('./routes/notifications'));
 
 const social = require('./routes/social');
 app.use(social);
 social.startScheduler();   // once-a-minute due-post worker
+
+const { startScheduler: startNotificationScheduler } = require('./services/notifications');
+startNotificationScheduler();   // once-a-minute reminder/announcement worker
 
 // ── Start ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;

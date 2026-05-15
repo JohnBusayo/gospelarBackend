@@ -801,6 +801,62 @@ const initDb = async () => {
          );
        END IF;
      END $$`,
+
+    // ── Notifications: opt-in prefs + audit log + delayed schedule ─────────
+    // Recipients are addressed by email (always) and phone (SMS opt-in).
+    // We don't FK to users — many recipients are non-users (event attendees
+    // who registered as guests). The log doubles as the dedupe key for the
+    // reminder worker so a restart doesn't re-fire a T-1 day reminder.
+    `ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS phone              VARCHAR(40)`,
+    `ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS sms_opt_in         BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS reminders_opt_in   BOOLEAN DEFAULT TRUE`,
+
+    `CREATE TABLE IF NOT EXISTS notification_log (
+       id             BIGSERIAL    PRIMARY KEY,
+       kind           VARCHAR(60)  NOT NULL,
+       channel        VARCHAR(20)  NOT NULL,
+       recipient      VARCHAR(255) NOT NULL,
+       subject        TEXT,
+       dedupe_key     VARCHAR(200),
+       status         VARCHAR(20)  NOT NULL DEFAULT 'sent',
+       provider       VARCHAR(40),
+       provider_id    TEXT,
+       error          TEXT,
+       metadata       JSONB,
+       sent_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_notif_log_kind_sent ON notification_log(kind, sent_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_notif_log_recipient ON notification_log(LOWER(recipient), sent_at DESC)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_notif_log_dedupe
+       ON notification_log(dedupe_key)
+       WHERE dedupe_key IS NOT NULL`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'notification_log_channel_check') THEN
+         ALTER TABLE notification_log ADD CONSTRAINT notification_log_channel_check CHECK (
+           channel IN ('email','sms')
+         );
+       END IF;
+     END $$`,
+
+    // notification_schedule — queued sends that fire at run_at. The scheduler
+    // worker (services/notifications.js) polls every 60s and dispatches due
+    // rows. Each row's dedupe_key is mirrored into notification_log on send.
+    `CREATE TABLE IF NOT EXISTS notification_schedule (
+       id           BIGSERIAL    PRIMARY KEY,
+       kind         VARCHAR(60)  NOT NULL,
+       channel      VARCHAR(20)  NOT NULL,
+       recipient    VARCHAR(255) NOT NULL,
+       payload      JSONB        NOT NULL,
+       dedupe_key   VARCHAR(200),
+       run_at       TIMESTAMPTZ  NOT NULL,
+       dispatched_at TIMESTAMPTZ,
+       attempts     INT          NOT NULL DEFAULT 0,
+       last_error   TEXT,
+       created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_notif_sched_due
+       ON notification_schedule(run_at)
+       WHERE dispatched_at IS NULL`,
   ];
 
   for (const sql of steps) {

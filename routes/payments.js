@@ -16,9 +16,37 @@ const {
   initPaystack, initFlutterwave, initStripe,
   verifyPaystack, verifyFlutterwave, verifyStripe,
 } = require('../services/payments');
+const { sendNow: sendNotification } = require('../services/notifications');
 const axios = require('axios');
 
 const router = express.Router();
+
+// Format a kobo amount as ₦ for the email body. 50000 → "₦500".
+const formatNaira = (kobo) => `₦${Math.round((Number(kobo) || 0) / 100).toLocaleString('en-NG')}`;
+// Format an ISO/Date for human display. Falls back to "soon" when missing
+// so the template never echoes "null" or "Invalid Date".
+const formatExpiry = (d) => {
+  if (!d) return null;
+  try { return new Date(d).toLocaleDateString('en-NG', { year: 'numeric', month: 'long', day: 'numeric' }); }
+  catch { return null; }
+};
+
+// Fire a payment-success notification without blocking the HTTP response.
+// We don't `await` so the API stays snappy even if Resend/Termii are slow;
+// notification_log captures the outcome either way.
+function notifyPaymentSuccess(email, planLabel, priceKobo, expiryDate) {
+  sendNotification({
+    kind: 'payment.success',
+    channel: 'email',
+    recipient: email,
+    payload: {
+      planLabel,
+      amountLabel:  formatNaira(priceKobo),
+      expiresLabel: formatExpiry(expiryDate),
+    },
+    metadata: { plan: planLabel, kobo: priceKobo },
+  }).catch((e) => console.warn('[notify] payment.success email:', e.message));
+}
 
 router.get('/api/subscription/plans', async (_req, res) => {
   try {
@@ -269,6 +297,7 @@ router.post('/api/verify-payment', async (req, res) => {
         RETURNING *
       `, [userEmail, now, exp, reference, newBooks, priceKobo, planId]);
       console.log('[Sub] Activated %s → book:%s plan:%s', userEmail, safeBookId, planId);
+      notifyPaymentSuccess(userEmail, planId, priceKobo, r.rows[0].expiry_date);
       return res.json({
         status: 'success', success: true, expiry_date: r.rows[0].expiry_date,
         book_id: safeBookId, plan_type: r.rows[0].plan_type, price_kobo: priceKobo,
@@ -293,6 +322,7 @@ router.post('/api/verify-payment', async (req, res) => {
       RETURNING *
     `, [userEmail, now, exp, reference, safeCategory, priceKobo, planType]);
     console.log('[Sub] Activated %s → plan:%s cat:%s', userEmail, planType, safeCategory);
+    notifyPaymentSuccess(userEmail, planType === 'all' ? 'All Categories' : `${safeCategory} (Single)`, priceKobo, r.rows[0].expiry_date);
     res.json({
       status: 'success', success: true, expiry_date: r.rows[0].expiry_date,
       subscribed_category: safeCategory, plan_type: planType, price_kobo: priceKobo,
@@ -355,6 +385,7 @@ router.post('/api/subscription/verify', async (req, res) => {
           updated_at       = NOW()
       `, [email, expiry, reference, newBooks, planId, priceKobo]);
       console.log('✅ subscription/verify: %s → book:%s', email, safeBookId);
+      notifyPaymentSuccess(email, planId, priceKobo, expiry);
       return res.json({
         success: true, expiry_date: expiry, plan_type: planId,
         book_id: safeBookId, subscribed_books: parseBooks(newBooks),
@@ -375,6 +406,7 @@ router.post('/api/subscription/verify', async (req, res) => {
         subscription_date=NOW(), subscribed_category=$4, plan_type=$5, price_kobo=$6, updated_at=NOW()
     `, [email, expiry, reference, safeCategory, planType, priceKobo]);
     console.log('✅ subscription/verify: %s → %s/%s', email, planType, safeCategory);
+    notifyPaymentSuccess(email, planType === 'all' ? 'All Categories' : `${safeCategory} (Single)`, priceKobo, expiry);
     return res.json({ success: true, expiry_date: expiry, subscribed_category: safeCategory, plan_type: planType });
   } catch (e) {
     console.error('subscription/verify error:', e.message);
