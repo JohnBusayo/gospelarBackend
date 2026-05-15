@@ -162,6 +162,28 @@ router.get('/api/gospeler-id/:email', async (req, res) => {
   }
 });
 
+// ── GET /api/gospeler-id/code/:gospelerCode ──────────────────────────────────
+// Public lookup by the human-readable gospeler_code (e.g. GSP-2026-AB12CD34).
+// Used by the registration webapp to auto-fill an attendee form when the user
+// types in their ID. Case-insensitive. Returns the same shape as the
+// email-keyed GET, minus photo_base64 (too large for an autofill payload).
+router.get('/api/gospeler-id/code/:gospelerCode', async (req, res) => {
+  const code = String(req.params.gospelerCode || '').trim().toUpperCase();
+  if (!code) return res.status(400).json({ error: 'Missing gospeler_code.' });
+  try {
+    const r = await db.query(
+      'SELECT * FROM gospeler_ids WHERE UPPER(gospeler_code) = $1',
+      [code]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
+    const { photo_base64, ...rest } = toPublic(r.rows[0]);
+    res.json(rest);
+  } catch (e) {
+    console.error('GET gospeler-id by code:', e.message);
+    res.status(500).json({ error: 'Failed to fetch Gospeler ID.' });
+  }
+});
+
 // ── POST /api/gospeler-id/:email ─────────────────────────────────────────────
 // Generate a brand-new Gospeler ID for a user. Fails 409 if one already
 // exists for the email — the client should call PUT (or the regenerate
