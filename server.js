@@ -310,6 +310,11 @@ const initDb = async () => {
     // would 22001 truncate without this. New DBs get the widened type from
     // the CREATE TABLE call up the file (still safe to ALTER as no-op).
     `ALTER TABLE subscription_plans ALTER COLUMN plan_id TYPE VARCHAR(64)`,
+    // USD pricing for international payments via Stripe. Naira is the source
+    // of truth (price_kobo); USD is admin-configured separately because FX
+    // drift makes auto-conversion unreliable. 0 = no Stripe price set yet —
+    // the Stripe init endpoint refuses to start a session for such plans.
+    `ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS price_usd_cents INTEGER NOT NULL DEFAULT 0`,
     `INSERT INTO subscription_plans (plan_id, price_kobo, days) VALUES
        ('single', 50000,  300),
        ('all',    100000, 300),
@@ -1419,12 +1424,35 @@ app.post('/api/admin/church-applications/:id/approve', adminAuth, async (req, re
     if (!r.rows.length) return res.status(404).json({ error: 'Application not found.' });
     const church = r.rows[0];
 
-    // Best-effort email — never blocks or rolls back the approval.
-    sendApprovalEmail(church, process.env.CHURCH_ADMIN_URL || null)
-      .then((m) => { if (!m.ok) console.warn('[approve] email skipped:', m.error); })
-      .catch((e) => console.warn('[approve] email error:', e.message));
+    // Await the email so the admin UI can show whether it actually went out.
+    // The approval itself has already committed above — any email failure is
+    // a soft warning, not a rollback. (If the email fails we still return 200
+    // and include the failure details under `mail`.)
+    let mail;
+    try {
+      mail = await sendApprovalEmail(church, process.env.CHURCH_ADMIN_URL || null);
+      if (!mail?.ok) {
+        console.warn('[approve] email not sent to', church.admin_email, '·', mail?.error);
+      }
+    } catch (e) {
+      console.warn('[approve] email threw:', e.message);
+      mail = { ok: false, error: e.message, error_code: 'threw' };
+    }
 
-    res.json({ message: 'Approved.', church });
+    res.json({
+      message: mail?.ok
+        ? 'Approved and confirmation email sent.'
+        : 'Approved, but confirmation email could not be sent.',
+      church,
+      mail: {
+        ok:         !!mail?.ok,
+        id:         mail?.id || null,
+        from:       mail?.from || null,
+        error:      mail?.error || null,
+        error_code: mail?.error_code || null,
+        status:     mail?.status || null,
+      },
+    });
   } catch (e) {
     console.error('POST /api/admin/church-applications/:id/approve:', e.code, e.message);
     res.status(500).json({ error: 'Approve failed.' });
@@ -1449,11 +1477,31 @@ app.post('/api/admin/church-applications/:id/reject', adminAuth, async (req, res
     if (!r.rows.length) return res.status(404).json({ error: 'Application not found.' });
     const church = r.rows[0];
 
-    sendRejectionEmail(church, reason)
-      .then((m) => { if (!m.ok) console.warn('[reject] email skipped:', m.error); })
-      .catch((e) => console.warn('[reject] email error:', e.message));
+    let mail;
+    try {
+      mail = await sendRejectionEmail(church, reason);
+      if (!mail?.ok) {
+        console.warn('[reject] email not sent to', church.admin_email, '·', mail?.error);
+      }
+    } catch (e) {
+      console.warn('[reject] email threw:', e.message);
+      mail = { ok: false, error: e.message, error_code: 'threw' };
+    }
 
-    res.json({ message: 'Rejected.', church });
+    res.json({
+      message: mail?.ok
+        ? 'Rejected and notification email sent.'
+        : 'Rejected, but notification email could not be sent.',
+      church,
+      mail: {
+        ok:         !!mail?.ok,
+        id:         mail?.id || null,
+        from:       mail?.from || null,
+        error:      mail?.error || null,
+        error_code: mail?.error_code || null,
+        status:     mail?.status || null,
+      },
+    });
   } catch (e) {
     console.error('POST /api/admin/church-applications/:id/reject:', e.code, e.message);
     res.status(500).json({ error: 'Reject failed.' });
@@ -5762,27 +5810,32 @@ const VALID_PLANS = ['single','all'];
 async function getPlanPricing(planId) {
   try {
     const r = await db.query(
-      'SELECT plan_id, price_kobo, days FROM subscription_plans WHERE plan_id=$1',
+      'SELECT plan_id, price_kobo, COALESCE(price_usd_cents, 0) AS price_usd_cents, days FROM subscription_plans WHERE plan_id=$1',
       [planId]
     );
     if (r.rows[0]) return r.rows[0];
   } catch (e) { /* table may not exist on first run — fall through */ }
   return planId === 'all'
-    ? { plan_id:'all',    price_kobo:100000, days:SUBSCRIPTION_DAYS }
-    : { plan_id:'single', price_kobo:50000,  days:SUBSCRIPTION_DAYS };
+    ? { plan_id:'all',    price_kobo:100000, price_usd_cents: 0, days:SUBSCRIPTION_DAYS }
+    : { plan_id:'single', price_kobo:50000,  price_usd_cents: 0, days:SUBSCRIPTION_DAYS };
 }
 
-// Public — frontend reads this on mount to populate price/days for both plans
+// Public — frontend reads this on mount to populate price/days for every plan
+// (subscription tiers + per-book SKUs). Returns price_usd_cents alongside the
+// Naira amount so the mobile checkout can display the right currency per
+// provider choice.
 app.get('/api/subscription/plans', async (_req, res) => {
   try {
     const r = await db.query(
-      'SELECT plan_id, price_kobo, days, updated_at FROM subscription_plans ORDER BY price_kobo'
+      `SELECT plan_id, price_kobo, COALESCE(price_usd_cents, 0) AS price_usd_cents,
+              days, updated_at
+         FROM subscription_plans
+        ORDER BY price_kobo`
     );
     if (!r.rows.length) {
-      // Empty table — return defaults
       return res.json([
-        { plan_id:'single', price_kobo:50000,  days:SUBSCRIPTION_DAYS },
-        { plan_id:'all',    price_kobo:100000, days:SUBSCRIPTION_DAYS },
+        { plan_id:'single', price_kobo:50000,  price_usd_cents: 0, days:SUBSCRIPTION_DAYS },
+        { plan_id:'all',    price_kobo:100000, price_usd_cents: 0, days:SUBSCRIPTION_DAYS },
       ]);
     }
     res.json(r.rows);
@@ -5795,30 +5848,43 @@ app.get('/api/subscription/plans', async (_req, res) => {
   }
 });
 
-// Admin — update price/days for a single plan
+// Admin — update price/days for any plan_id (subscription tier or book SKU).
+// Accepts price_kobo (NGN smallest unit, required) and optional price_usd_cents
+// for international Stripe checkout. plan_id is restricted by regex rather
+// than an allow-list so newly-seeded book SKUs work without code changes.
 app.put('/api/admin/subscription/plans/:planId', adminAuth, async (req, res) => {
-  const planId = req.params.planId;
-  if (!VALID_PLANS.includes(planId)) {
-    return res.status(400).json({ error:`plan_id must be one of: ${VALID_PLANS.join(', ')}` });
+  const planId = String(req.params.planId || '');
+  if (!/^[a-z0-9_]{1,64}$/i.test(planId)) {
+    return res.status(400).json({ error: 'plan_id must be 1-64 chars, lowercase letters, digits, or underscores.' });
   }
   const price_kobo = parseInt(req.body.price_kobo, 10);
   const days       = parseInt(req.body.days,       10);
+  // Optional — only validated when present. Omitted means "leave USD price
+  // alone", so admins editing just the Naira price don't accidentally wipe
+  // a configured USD price.
+  const hasUsd = req.body.price_usd_cents != null;
+  const price_usd_cents = hasUsd ? parseInt(req.body.price_usd_cents, 10) : null;
   if (!Number.isFinite(price_kobo) || price_kobo < 100) {
     return res.status(400).json({ error:'price_kobo must be an integer ≥ 100 (i.e. ₦1).' });
   }
   if (!Number.isFinite(days) || days < 1 || days > 3650) {
     return res.status(400).json({ error:'days must be an integer between 1 and 3650.' });
   }
+  if (hasUsd && (!Number.isFinite(price_usd_cents) || price_usd_cents < 0 || price_usd_cents > 10_000_000)) {
+    return res.status(400).json({ error: 'price_usd_cents must be an integer between 0 and 10,000,000.' });
+  }
   try {
+    // Build the UPDATE SET clause dynamically so the USD column is only
+    // touched when the caller supplied it.
+    const setParts = ['price_kobo = EXCLUDED.price_kobo', 'days = EXCLUDED.days', 'updated_at = NOW()'];
+    if (hasUsd) setParts.push('price_usd_cents = EXCLUDED.price_usd_cents');
     const r = await db.query(`
-      INSERT INTO subscription_plans (plan_id, price_kobo, days, updated_at)
-      VALUES ($1, $2, $3, NOW())
+      INSERT INTO subscription_plans (plan_id, price_kobo, price_usd_cents, days, updated_at)
+      VALUES ($1, $2, $3, $4, NOW())
       ON CONFLICT (plan_id) DO UPDATE SET
-        price_kobo = EXCLUDED.price_kobo,
-        days       = EXCLUDED.days,
-        updated_at = NOW()
+        ${setParts.join(',\n        ')}
       RETURNING *
-    `, [planId, price_kobo, days]);
+    `, [planId, price_kobo, hasUsd ? price_usd_cents : 0, days]);
     res.json(r.rows[0]);
   } catch (e) {
     console.error('PUT /api/admin/subscription/plans:', e.message);
@@ -5841,27 +5907,151 @@ const addBookToList = (raw, bookId) => {
   return Array.from(set).join(',');
 };
 
+// ── Payment provider helpers ────────────────────────────────────────────────
+// Three providers: Paystack (NGN, default), Flutterwave (NGN, alt), Stripe
+// (USD, international). Each returns a uniform shape so the init endpoint
+// doesn't have to branch on provider downstream:
+//   { ok: true,  authorization_url, reference, raw }
+//   { ok: false, code, message, status, raw }
+// The "reference" we return is what the frontend hands back to /verify-payment.
+// Stripe uses its session id as the reference; Flutterwave uses tx_ref.
+
+const PROVIDERS = ['paystack', 'flutterwave', 'stripe'];
+
+async function initPaystack({ email, pricing, planId, reference, metadata, callbackUrl }) {
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    return { ok: false, code: 'paystack_key_missing', message: 'Paystack key not configured on server.' };
+  }
+  try {
+    const r = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email, amount: pricing.price_kobo, currency: 'NGN',
+        reference, callback_url: callbackUrl, metadata,
+      },
+      { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } },
+    );
+    const d = r.data?.data;
+    if (!d?.authorization_url) {
+      return { ok: false, code: 'paystack_no_url', message: 'Paystack did not return an authorization URL.', raw: r.data };
+    }
+    return { ok: true, authorization_url: d.authorization_url, reference: d.reference, raw: d };
+  } catch (e) {
+    return paymentErrorOut('paystack', e);
+  }
+}
+
+async function initFlutterwave({ email, pricing, planId, reference, metadata, callbackUrl }) {
+  if (!process.env.FLUTTERWAVE_SECRET_KEY) {
+    return { ok: false, code: 'flutterwave_key_missing', message: 'Flutterwave key not configured on server.' };
+  }
+  try {
+    // Flutterwave amounts are in major units (Naira), not kobo.
+    const r = await axios.post(
+      'https://api.flutterwave.com/v3/payments',
+      {
+        tx_ref:       reference,
+        amount:       pricing.price_kobo / 100,
+        currency:     'NGN',
+        redirect_url: callbackUrl,
+        customer:     { email },
+        customizations: { title: 'Gospelar', description: `Subscription: ${planId}` },
+        meta:         metadata,
+      },
+      { headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}`, 'Content-Type': 'application/json' } },
+    );
+    const link = r.data?.data?.link;
+    if (!link) {
+      return { ok: false, code: 'flutterwave_no_url', message: 'Flutterwave did not return a payment link.', raw: r.data };
+    }
+    return { ok: true, authorization_url: link, reference, raw: r.data?.data };
+  } catch (e) {
+    return paymentErrorOut('flutterwave', e);
+  }
+}
+
+async function initStripe({ email, pricing, planId, reference, metadata, callbackUrl }) {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    return { ok: false, code: 'stripe_key_missing', message: 'Stripe key not configured on server.' };
+  }
+  if (!pricing.price_usd_cents || pricing.price_usd_cents < 50) {
+    // Stripe's minimum charge is $0.50; also the admin may not have set a
+    // USD price yet for this plan.
+    return {
+      ok: false, code: 'stripe_no_usd_price',
+      message: `No USD price configured for "${planId}". Set price_usd_cents in the admin Pricing page (must be ≥ 50¢).`,
+    };
+  }
+  try {
+    // Stripe Checkout Sessions use form-urlencoded, not JSON. We build the
+    // body by hand rather than pulling in the Stripe SDK as a new dependency.
+    const params = new URLSearchParams();
+    params.append('mode', 'payment');
+    params.append('customer_email', email);
+    params.append('success_url', `${callbackUrl}?provider=stripe&session_id={CHECKOUT_SESSION_ID}`);
+    params.append('cancel_url',  `${callbackUrl}?provider=stripe&cancelled=1`);
+    params.append('line_items[0][quantity]', '1');
+    params.append('line_items[0][price_data][currency]', 'usd');
+    params.append('line_items[0][price_data][unit_amount]', String(pricing.price_usd_cents));
+    params.append('line_items[0][price_data][product_data][name]', `Gospelar — ${planId}`);
+    params.append('client_reference_id', reference);
+    Object.entries(metadata || {}).forEach(([k, v]) => {
+      if (v != null) params.append(`metadata[${k}]`, String(v));
+    });
+
+    const r = await axios.post(
+      'https://api.stripe.com/v1/checkout/sessions',
+      params.toString(),
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      },
+    );
+    const session = r.data;
+    if (!session?.url) {
+      return { ok: false, code: 'stripe_no_url', message: 'Stripe did not return a Checkout URL.', raw: session };
+    }
+    // For Stripe, the reference the frontend hands back must be the session
+    // id (Stripe verifies sessions by id, not by our tx_ref).
+    return { ok: true, authorization_url: session.url, reference: session.id, raw: session };
+  } catch (e) {
+    return paymentErrorOut('stripe', e);
+  }
+}
+
+function paymentErrorOut(provider, e) {
+  const status = e?.response?.status || 500;
+  const upstream = e?.response?.data?.message || e?.response?.data?.error?.message || e?.response?.data || e.message;
+  console.error(`[${provider}]`, status, typeof upstream === 'string' ? upstream : JSON.stringify(upstream));
+  return {
+    ok: false,
+    code: status === 401 ? `${provider}_auth` : `${provider}_init_failed`,
+    message: status === 401
+      ? `Payment provider rejected credentials. Check ${provider.toUpperCase()}_SECRET_KEY.`
+      : `Failed to initialize ${provider} payment. Please try again.`,
+    status,
+    detail: typeof upstream === 'string' ? upstream : JSON.stringify(upstream),
+  };
+}
+
 // POST /api/payments/initialize
-// Server-side Paystack initialize — replaces the previous client-side
-// inline.js flow. Frontend posts { email, plan, category?, book_id? },
-// server resolves the right amount from the subscription_plans table
-// (so the price can never be tampered with from the device), calls
-// Paystack with the secret key, and returns {authorization_url, reference}.
-// Frontend opens authorization_url in a WebView and listens for the
-// callback redirect — same WebView pattern as before, just without the
-// public key in the bundle.
+// Server-side payment session creation. Frontend posts
+//   { email, plan, category?, book_id?, provider? }
+// where provider ∈ { paystack | flutterwave | stripe }, defaulting to
+// 'paystack' for backwards compat. Server resolves the right amount from
+// the subscription_plans table (price never trusted from the client),
+// then hands off to the matching provider helper. Returns
+//   { status:'success', authorization_url, reference, provider, ... }
+// The mobile WebView opens authorization_url and intercepts the callback.
 app.post('/api/payments/initialize', async (req, res) => {
   const { email, plan = 'single', category = 'adult', book_id = null } = req.body || {};
-  if (!email)             return res.status(400).json({ status: 'error', code: 'missing_email',   message: 'email required.' });
-  if (!isValidEmail(email)) return res.status(400).json({ status: 'error', code: 'invalid_email', message: 'Invalid email.' });
+  const rawProvider = String(req.body?.provider || 'paystack').toLowerCase();
+  const provider = PROVIDERS.includes(rawProvider) ? rawProvider : 'paystack';
 
-  if (!process.env.PAYSTACK_SECRET_KEY) {
-    console.error('payments/initialize: PAYSTACK_SECRET_KEY not set');
-    return res.status(500).json({
-      status: 'error', code: 'paystack_key_missing',
-      message: 'Payment provider is not configured. Contact support.',
-    });
-  }
+  if (!email)               return res.status(400).json({ status: 'error', code: 'missing_email',   message: 'email required.' });
+  if (!isValidEmail(email)) return res.status(400).json({ status: 'error', code: 'invalid_email', message: 'Invalid email.' });
 
   // Resolve the SKU. Per-book purchases use 'book_<slug>'; otherwise it's
   // the legacy single/all category plan.
@@ -5876,73 +6066,67 @@ app.post('/api/payments/initialize', async (req, res) => {
   try {
     pricing = await getPlanPricing(planId);
   } catch (e) {
-    pricing = { price_kobo: safeBookId ? 50000 : (planId === 'all' ? 100000 : 50000), days: safeBookId ? 365 : 300 };
+    pricing = {
+      price_kobo:      safeBookId ? 50000 : (planId === 'all' ? 100000 : 50000),
+      price_usd_cents: 0,
+      days:            safeBookId ? 365 : 300,
+    };
   }
 
-  // Reference includes the planId so server-side logs are easy to grep
-  // when something goes wrong on a specific SKU.
-  const reference = `Gospelar_${Date.now()}_${Math.random().toString(36).slice(2, 11)}_${planId}`.slice(0, 100);
+  // Reference includes provider + planId so server-side logs are easy to
+  // grep when something goes wrong on a specific SKU.
+  const reference = `Gospelar_${Date.now()}_${Math.random().toString(36).slice(2, 11)}_${provider}_${planId}`.slice(0, 100);
 
-  // The WebView watches its own navigation and intercepts this exact URL —
-  // the host doesn't have to actually be reachable, but if it is (it is,
-  // we serve /api/payments/callback above), we get a friendly "Payment
-  // received" splash for the half-second between Paystack and verify.
   const PUBLIC_BASE = process.env.PUBLIC_API_URL
     || `${req.protocol}://${req.get('host')}`;
   const callbackUrl = `${PUBLIC_BASE.replace(/\/$/, '')}/api/payments/callback`;
 
-  try {
-    const initRes = await axios.post(
-      'https://api.paystack.co/transaction/initialize',
-      {
-        email:        email.toLowerCase(),
-        amount:       pricing.price_kobo,
-        currency:     'NGN',
-        reference,
-        callback_url: callbackUrl,
-        metadata: {
-          plan_id:  planId,
-          category: planId === 'all' || safeBookId ? null : safeCategory,
-          book_id:  safeBookId,
-          custom_fields: [
-            { display_name: 'Plan',     variable_name: 'plan_id',  value: planId },
-            { display_name: 'Category', variable_name: 'category', value: safeBookId ? '—' : safeCategory },
-          ],
-        },
-      },
-      { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' } }
-    );
-    const data = initRes.data?.data;
-    if (!data?.authorization_url) {
-      return res.status(502).json({
-        status: 'error', code: 'paystack_no_url',
-        message: 'Paystack did not return an authorization URL.',
-        detail:  initRes.data?.message || null,
-      });
-    }
-    res.json({
-      status:            'success',
-      authorization_url: data.authorization_url,
-      access_code:       data.access_code,
-      reference:         data.reference,
-      amount_kobo:       pricing.price_kobo,
-      plan_id:           planId,
-      category:          safeBookId ? null : safeCategory,
-      book_id:           safeBookId,
-    });
-  } catch (e) {
-    const status   = e?.response?.status || 500;
-    const upstream = e?.response?.data?.message || e?.response?.data || e.message;
-    console.error('payments/initialize:', status, upstream);
-    res.status(status === 401 ? 400 : 502).json({
-      status:  'error',
-      code:    status === 401 ? 'paystack_auth' : 'paystack_init_failed',
-      message: status === 401
-        ? 'Payment provider rejected our credentials. Contact support.'
-        : 'Failed to initialize payment. Please try again.',
-      detail:  typeof upstream === 'string' ? upstream : JSON.stringify(upstream),
+  const metadata = {
+    plan_id:  planId,
+    category: planId === 'all' || safeBookId ? null : safeCategory,
+    book_id:  safeBookId,
+    provider,
+  };
+  const callArgs = { email: email.toLowerCase(), pricing, planId, reference, metadata, callbackUrl };
+
+  let result;
+  if      (provider === 'flutterwave') result = await initFlutterwave(callArgs);
+  else if (provider === 'stripe')      result = await initStripe(callArgs);
+  else                                 result = await initPaystack({
+    ...callArgs,
+    // Paystack supports its own metadata shape with custom_fields — pass them
+    // through here so the dashboard view stays useful for that provider.
+    metadata: {
+      ...metadata,
+      custom_fields: [
+        { display_name: 'Plan',     variable_name: 'plan_id',  value: planId },
+        { display_name: 'Category', variable_name: 'category', value: safeBookId ? '—' : safeCategory },
+      ],
+    },
+  });
+
+  if (!result.ok) {
+    const httpCode = result.status === 401 ? 400 : 502;
+    return res.status(httpCode).json({
+      status: 'error',
+      code:    result.code,
+      message: result.message,
+      detail:  result.detail || null,
+      provider,
     });
   }
+
+  res.json({
+    status:            'success',
+    provider,
+    authorization_url: result.authorization_url,
+    reference:         result.reference,
+    amount_kobo:       pricing.price_kobo,
+    amount_usd_cents:  pricing.price_usd_cents,
+    plan_id:           planId,
+    category:          safeBookId ? null : safeCategory,
+    book_id:           safeBookId,
+  });
 });
 
 // GET /api/payments/callback?reference=…
@@ -5969,55 +6153,160 @@ p{font-size:13px;color:rgba(255,255,255,.6);margin:0;line-height:1.5}</style>
 </div></body></html>`);
 });
 
+// ── Verify helpers — uniform { ok, amount_kobo, customer_email } shape ─────
+async function verifyPaystack(reference) {
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    return { ok: false, code: 'paystack_key_missing', message: 'Paystack not configured.' };
+  }
+  try {
+    const r = await axios.get(
+      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
+      { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } },
+    );
+    const txn = r.data?.data;
+    if (!txn) return { ok: false, code: 'paystack_no_data', message: 'Paystack returned no transaction for this reference.' };
+    if (txn.status !== 'success') {
+      return {
+        ok: false, code: 'txn_not_successful',
+        message: `Transaction status is "${txn.status || 'unknown'}". Only successful charges can be verified.`,
+        gateway_response: txn.gateway_response || null,
+      };
+    }
+    return {
+      ok: true,
+      amount_kobo: txn.amount,
+      customer_email: (txn.customer?.email || '').toLowerCase(),
+      currency: txn.currency || 'NGN',
+      raw: txn,
+    };
+  } catch (e) { return paymentErrorOut('paystack', e); }
+}
+
+async function verifyFlutterwave(reference) {
+  if (!process.env.FLUTTERWAVE_SECRET_KEY) {
+    return { ok: false, code: 'flutterwave_key_missing', message: 'Flutterwave not configured.' };
+  }
+  try {
+    const r = await axios.get(
+      `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${encodeURIComponent(reference)}`,
+      { headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` } },
+    );
+    const txn = r.data?.data;
+    if (!txn) return { ok: false, code: 'flutterwave_no_data', message: 'Flutterwave returned no transaction for this reference.' };
+    if (txn.status !== 'successful') {
+      return {
+        ok: false, code: 'txn_not_successful',
+        message: `Transaction status is "${txn.status || 'unknown'}".`,
+      };
+    }
+    return {
+      ok: true,
+      amount_kobo: Math.round((Number(txn.amount) || 0) * 100), // FW reports NGN whole units
+      customer_email: (txn.customer?.email || '').toLowerCase(),
+      currency: txn.currency || 'NGN',
+      raw: txn,
+    };
+  } catch (e) { return paymentErrorOut('flutterwave', e); }
+}
+
+async function verifyStripe(sessionId, planPriceKobo) {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    return { ok: false, code: 'stripe_key_missing', message: 'Stripe not configured.' };
+  }
+  try {
+    const r = await axios.get(
+      `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`,
+      { headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}` } },
+    );
+    const session = r.data;
+    if (!session) return { ok: false, code: 'stripe_no_data', message: 'Stripe returned no session for this id.' };
+    if (session.payment_status !== 'paid') {
+      return {
+        ok: false, code: 'txn_not_successful',
+        message: `Stripe payment_status is "${session.payment_status || 'unknown'}".`,
+      };
+    }
+    return {
+      ok: true,
+      // For DB consistency we record the NGN baseline price from the plan.
+      // The actual USD charge is captured in `amount_usd_cents`.
+      amount_kobo:      planPriceKobo || 0,
+      amount_usd_cents: session.amount_total,
+      customer_email:   (session.customer_email || session.customer_details?.email || '').toLowerCase(),
+      currency:         (session.currency || 'usd').toUpperCase(),
+      raw:              session,
+    };
+  } catch (e) { return paymentErrorOut('stripe', e); }
+}
+
+// Detect provider for back-compat: explicit body.provider wins; otherwise the
+// reference shape gives it away (Stripe session ids start with `cs_`; our
+// own references for paystack/flutterwave embed the provider name in slot 4).
+function detectProvider(req) {
+  const explicit = String(req.body?.provider || '').toLowerCase();
+  if (PROVIDERS.includes(explicit)) return explicit;
+  const ref = String(req.body?.reference || '');
+  if (/^cs_(test|live)_/i.test(ref)) return 'stripe';
+  const parts = ref.split('_');
+  if (parts[3] && PROVIDERS.includes(parts[3].toLowerCase())) return parts[3].toLowerCase();
+  return 'paystack'; // legacy default
+}
+
 app.post('/api/verify-payment', async (req, res) => {
   const { reference, email, category='adult', book_id=null } = req.body;
   if (!reference||!email) return res.status(400).json({ status:'error', message:'reference and email required.' });
   if (!isValidEmail(email)) return res.status(400).json({ status:'error', message:'Invalid email.' });
   const userEmail    = email.toLowerCase();
   const safeCategory = VALID_CATS.includes(category) ? category : 'adult';
+  const provider     = detectProvider(req);
   // Book-SKU path: when a book_id is present, this is a per-book purchase
   // (Victory Month Prayer etc.) and we resolve pricing via the book's
   // dedicated plan row instead of the single/all category plans.
   const safeBookId   = book_id && /^[a-z0-9_]{3,64}$/i.test(String(book_id))
     ? String(book_id).toLowerCase()
     : null;
-  // Fail fast if the env var was never set — otherwise Paystack returns 401
-  // and we end up logging a vague "Failed to verify payment" with no clue.
-  if (!process.env.PAYSTACK_SECRET_KEY) {
-    console.error('verify-payment: PAYSTACK_SECRET_KEY is not set on the server');
-    return res.status(500).json({
-      status: 'error',
-      code: 'paystack_key_missing',
-      message: 'Payment provider is not configured. Contact support.',
-    });
-  }
   try {
-    const pRes = await axios.get(
-      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
-      { headers:{ Authorization:`Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
-    );
-    const txn = pRes.data?.data;
-    if (!txn) {
-      return res.status(400).json({
-        status: 'error', code: 'paystack_no_data',
-        message: 'Paystack returned no transaction data for this reference.',
+    // Stripe needs the plan's price_kobo upfront so the verify helper can
+    // record a sensible NGN-baseline amount on rows that were actually
+    // paid in USD. Resolve early; falls back gracefully.
+    let planForBase;
+    if (provider === 'stripe') {
+      const planId = safeBookId ? `book_${safeBookId}` : (safeCategory === 'all' ? 'all' : 'single');
+      planForBase = await getPlanPricing(planId).catch(() => null);
+    }
+
+    let v;
+    if      (provider === 'flutterwave') v = await verifyFlutterwave(reference);
+    else if (provider === 'stripe')      v = await verifyStripe(reference, planForBase?.price_kobo || 0);
+    else                                 v = await verifyPaystack(reference);
+
+    if (!v.ok) {
+      const httpCode = v.status === 401 ? 400 : (v.status === 404 ? 400 : 400);
+      return res.status(httpCode).json({
+        status:  'error',
+        code:    v.code,
+        message: v.message,
+        gateway_response: v.gateway_response || null,
+        provider,
       });
     }
-    if (txn.status !== 'success') {
-      return res.status(400).json({
-        status: 'error', code: 'txn_not_successful',
-        message: `Transaction status is "${txn.status || 'unknown'}". Only successful charges can be verified.`,
-        gateway_response: txn.gateway_response || null,
-      });
-    }
-    if (txn.customer?.email?.toLowerCase() !== userEmail) {
+
+    if (v.customer_email && v.customer_email !== userEmail) {
       return res.status(400).json({
         status: 'error', code: 'email_mismatch',
-        message: `Payment email (${txn.customer?.email || '?'}) doesn't match the account email (${userEmail}).`,
+        message: `Payment email (${v.customer_email}) doesn't match the account email (${userEmail}).`,
       });
     }
+
+    // Backwards-compatible: reuse the paystack_ref column for any provider's
+    // reference. It's just an opaque unique string. Renaming the column is
+    // a separate refactor.
     const dup = await db.query('SELECT * FROM subscribers WHERE paystack_ref=$1', [reference]);
     if (dup.rows.length) return res.json({ status:'success', data:dup.rows[0] });
+    // Shim — downstream code below was originally written against Paystack's
+    // shape (txn.amount, txn.customer.email). Adapt the uniform verify-helper
+    // result so the existing INSERT logic keeps working unchanged.
+    const txn = { amount: v.amount_kobo, customer: { email: v.customer_email }, status: 'success' };
 
     if (safeBookId) {
       // Per-book SKU. Bug history:
@@ -6093,23 +6382,14 @@ app.post('/api/verify-payment', async (req, res) => {
       data:r.rows[0],
     });
   } catch (e) {
-    // Surface the upstream cause so the client can show something useful
-    // (and so a future operator can debug from logs without re-deploying).
-    const status   = e?.response?.status || 500;
-    const upstream = e?.response?.data?.message || e?.response?.data || e.message;
-    console.error('verify-payment:', status, upstream);
-    let code = 'verify_failed';
-    if (status === 401) code = 'paystack_auth';   // bad / missing secret key
-    if (status === 404) code = 'paystack_unknown_ref';
-    res.status(status === 401 || status === 404 ? 400 : 500).json({
+    // Provider HTTP errors are caught inside the verify helpers above; this
+    // catch only fires for unexpected failures (DB write, etc.).
+    console.error('verify-payment:', e?.code || '(no code)', e?.message || '(no message)');
+    res.status(500).json({
       status:  'error',
-      code,
-      message: status === 401
-        ? 'Payment provider rejected our credentials. Contact support.'
-        : status === 404
-          ? 'Paystack does not recognise this transaction reference.'
-          : 'Failed to verify payment. Please try again.',
-      detail:  typeof upstream === 'string' ? upstream : JSON.stringify(upstream),
+      code:    'verify_failed',
+      message: 'Failed to verify payment. Please try again.',
+      detail:  e?.message || null,
     });
   }
 });
