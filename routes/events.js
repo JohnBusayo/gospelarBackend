@@ -99,6 +99,9 @@ function ticketRow(r) {
     attendeeEmail:     r.attendee_email,
     attendeePhone:     r.attendee_phone || '',
     attendeeProfile:   r.attendee_profile || {},
+    // Promoted from attendee_profile.photo so callers (and email templates)
+    // can read it as a flat field without knowing the JSON shape.
+    attendeePhoto:     (r.attendee_profile && r.attendee_profile.photo) || null,
     ageGroup:          r.age_group || 'adult',
     dietary:           r.dietary || '',
     emergencyName:     r.emergency_name || '',
@@ -419,11 +422,23 @@ router.post('/api/events/:id/register', async (req, res) => {
               a.email ? String(a.email).toLowerCase() : null,
               a.phone || null,
               JSON.stringify({
+                // Identity fields — duplicated here (also on flat columns)
+                // so the filled-form PDF can render labelled values without
+                // a second join. Source of truth stays the flat columns.
+                firstName: a.firstName || '', lastName: a.lastName || '',
+                email: a.email || '', phone: a.phone || '',
                 title: a.title, sex: a.sex, maritalStatus: a.maritalStatus,
                 city: a.city, country: a.country,
                 region: a.region, district: a.district, assembly: a.assembly,
                 ageBracket: a.ageBracket, conventionLocation: a.conventionLocation,
+                dietary: a.dietary || '',
+                emergencyName: a.emergencyName || '',
+                emergencyPhone: a.emergencyPhone || '',
                 otherInfo: a.otherInfo || '',
+                // Headshot for the badge / ticket PDFs. Accepts a data-URL or
+                // raw base64; stored verbatim so renderers (web + email + PDF)
+                // can use it directly.
+                photo: a.photo || null,
               }),
               a.ageGroup || 'adult',
               a.dietary || '',

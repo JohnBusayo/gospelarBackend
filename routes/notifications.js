@@ -16,6 +16,8 @@ const { adminAuth }    = require('../middleware/auth');
 const { isValidEmail } = require('../utils/helpers');
 const { sendNow, schedule, broadcast } = require('../services/notifications');
 const { normalizePhone }               = require('../services/sms');
+const { verify: verifyDownloadToken }  = require('../services/downloadTokens');
+const { buildTicketPdf, buildBadgePdf, buildFormPdf } = require('../services/ticketPdf');
 
 const router = express.Router();
 
@@ -24,12 +26,24 @@ const router = express.Router();
 // over the `ticket` body and let this helper map field names. The full
 // shape lets the email template render a self-contained visual ticket
 // (banner + QR + details) rather than just a code + link.
+//
+// We also carry the full `attendeeProfile` blob through unchanged so the
+// filled-form PDF (services/ticketPdf.js → buildFormPdf) has every field
+// the registration form collected. Existing renderers ignore it; the form
+// PDF is the only consumer today.
 function ticketPayload(ticket, extra = {}) {
   return {
     eventTitle:        ticket.eventTitle || '',
     attendeeName:      ticket.attendeeName || '',
     attendeeEmail:     ticket.attendeeEmail || '',
+    attendeePhone:     ticket.attendeePhone || ticket.attendeeProfile?.phone || null,
+    // Photo travels two paths today: top-level (older clients, local fallback)
+    // or nested in attendeeProfile.photo (canonical for backend-issued tickets,
+    // since we keep the registration form fields in event_tickets.attendee_profile).
+    attendeePhoto:     ticket.attendeePhoto || ticket.attendeeProfile?.photo || null,
+    attendeeProfile:   ticket.attendeeProfile || null,
     ticketCode:        ticket.code || '',
+    role:              ticket.role || 'attendee',
     eventStartsAt:     ticket.eventStartsAt || extra.eventStartsAt || null,
     eventLocation:     ticket.eventLocation || extra.eventLocation || null,
     ticketUrl:         ticket.ticketUrl     || extra.ticketUrl     || null,
@@ -42,6 +56,47 @@ function ticketPayload(ticket, extra = {}) {
     ...extra,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Download endpoints — embedded in confirmation emails as buttons. Tokens
+// are HMAC-signed copies of the ticket payload; the route regenerates the
+// requested PDF on demand and streams it. No DB lookup needed, no auth — the
+// token itself proves the request originated from a real email we sent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Map kind → (filename prefix, PDF builder). The route accepts only the
+// three known kinds so a tampered URL can't request an arbitrary builder.
+const DOWNLOAD_KINDS = {
+  ticket: { build: buildTicketPdf, prefix: 'ticket' },
+  badge:  { build: buildBadgePdf,  prefix: 'badge'  },
+  form:   { build: buildFormPdf,   prefix: 'form'   },
+};
+
+router.get('/api/notifications/download/:kind.pdf', async (req, res) => {
+  const kind = String(req.params.kind || '').toLowerCase();
+  const handler = DOWNLOAD_KINDS[kind];
+  if (!handler) return res.status(404).send('Not found.');
+
+  const token = String(req.query.token || '').trim();
+  const v = verifyDownloadToken(token);
+  if (!v.ok) {
+    return res.status(403).send(`Link is no longer valid (${v.error}).`);
+  }
+
+  let pdf;
+  try {
+    pdf = await handler.build(v.payload || {});
+  } catch (e) {
+    console.error('[notifications.download] render failed:', kind, e.message);
+    return res.status(500).send('Could not render that file.');
+  }
+
+  const code = (v.payload?.ticketCode || 'ticket').replace(/[^A-Za-z0-9_-]+/g, '');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${handler.prefix}-${code}.pdf"`);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.send(pdf);
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ticket-flow endpoints (called by the registration frontend)

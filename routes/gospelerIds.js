@@ -177,8 +177,9 @@ router.get('/api/gospeler-id/:email', async (req, res) => {
 // ── GET /api/gospeler-id/code/:gospelerCode ──────────────────────────────────
 // Public lookup by the human-readable gospeler_code (e.g. GSP-2026-AB12CD34).
 // Used by the registration webapp to auto-fill an attendee form when the user
-// types in their ID. Case-insensitive. Returns the same shape as the
-// email-keyed GET, minus photo_base64 (too large for an autofill payload).
+// types in their ID. Case-insensitive. Returns the full public shape including
+// photo_base64 so the registrant's saved headshot can be carried onto their
+// event badge / ticket without a re-upload.
 router.get('/api/gospeler-id/code/:gospelerCode', async (req, res) => {
   const code = String(req.params.gospelerCode || '').trim().toUpperCase();
   if (!code) return res.status(400).json({ error: 'Missing gospeler_code.' });
@@ -188,8 +189,7 @@ router.get('/api/gospeler-id/code/:gospelerCode', async (req, res) => {
       [code]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
-    const { photo_base64, ...rest } = toPublic(r.rows[0]);
-    res.json(rest);
+    res.json(toPublic(r.rows[0]));
   } catch (e) {
     console.error('GET gospeler-id by code:', e.message);
     res.status(500).json({ error: 'Failed to fetch Gospeler ID.' });

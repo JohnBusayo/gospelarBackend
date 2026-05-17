@@ -20,6 +20,58 @@
 const db = require('../db');
 const { sendMail }       = require('./mailer');
 const { sendSms }        = require('./sms');
+const { buildBadgePdf, buildTicketPdf, buildFormPdf } = require('./ticketPdf');
+const { sign: signDownloadToken } = require('./downloadTokens');
+
+// Origin used to build absolute download URLs in the email body. Falls back
+// to the brand domain so links still work when PUBLIC_APP_URL isn't set.
+function publicOrigin() {
+  return (process.env.PUBLIC_APP_URL || 'https://gospelar.app').replace(/\/$/, '');
+}
+
+// Build the three Download-X button URLs for a confirmation email. Each
+// carries a signed token containing the same payload we render PDFs from,
+// so the download endpoint regenerates the file without touching the DB.
+function downloadUrls(payload) {
+  if (!payload?.ticketCode) return null;
+  const token = signDownloadToken(payload, { ttlSeconds: 60 * 60 * 24 * 365 });
+  const origin = publicOrigin();
+  const t = encodeURIComponent(token);
+  return {
+    ticket: `${origin}/api/notifications/download/ticket.pdf?token=${t}`,
+    badge:  `${origin}/api/notifications/download/badge.pdf?token=${t}`,
+    form:   `${origin}/api/notifications/download/form.pdf?token=${t}`,
+  };
+}
+
+// Three-button row rendered into the confirmation email body. Email clients
+// vary wildly in CSS support — nested tables are the only reliable way to
+// keep three pill buttons on one row (and stack them in narrow viewports
+// like the iOS preview pane). Returns '' when downloads are unavailable.
+function downloadButtonsHtml(urls) {
+  if (!urls) return '';
+  const btn = (href, label) => `
+    <td align="center" valign="middle" style="padding:4px">
+      <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0">
+        <tr><td style="background:#0F172A;border-radius:10px">
+          <a href="${href}" style="display:inline-block;padding:11px 18px;color:#FFFFFF;font-weight:700;font-size:13px;letter-spacing:0.02em;text-decoration:none;white-space:nowrap">${label}</a>
+        </td></tr>
+      </table>
+    </td>`;
+  return `
+    <div style="margin:6px 0 22px">
+      <div style="font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#64748B;margin-bottom:8px">Download your copy</div>
+      <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr>
+        ${btn(urls.ticket, '⬇ Ticket PDF')}
+        ${btn(urls.badge,  '⬇ Badge PDF')}
+        ${btn(urls.form,   '⬇ Form PDF')}
+      </tr></table>
+      <div style="font-size:11.5px;color:#64748B;margin-top:8px;line-height:1.55">
+        These same files are attached to this email — tap an attachment to save it directly, or use the buttons above if your inbox hides attachments.
+      </div>
+    </div>
+  `;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Templates
@@ -106,11 +158,25 @@ function roleColours(role) {
 // coloured stripe + avatar + name + code + role pill) using nested tables so
 // Gmail/Outlook lay it out cleanly. Rendered as the hero of the email so the
 // recipient sees what they need before scrolling.
-function ticketTagHtml(p) {
-  const role     = roleColours(p.role);
-  const initials = String(p.attendeeName || '?')
+// Build the avatar cell — photo when the payload carries one (data URL or
+// raw base64), gradient initials block otherwise. Email clients clip <img>
+// with border-radius unevenly, so we wrap in a rounded background and let
+// the photo fill the square.
+function avatarHtml({ photo, name, gradient }) {
+  const initials = String(name || '?')
     .split(/\s+/).filter(Boolean).slice(0, 2)
     .map((w) => (w[0] || '').toUpperCase()).join('') || '?';
+  if (photo) {
+    const src = String(photo).startsWith('data:')
+      ? photo
+      : `data:image/jpeg;base64,${photo}`;
+    return `<img src="${src}" alt="" width="48" height="48" style="display:block;width:48px;height:48px;border-radius:10px;object-fit:cover;border:1px solid #E2E8F0" />`;
+  }
+  return `<div style="width:48px;height:48px;border-radius:10px;background:${gradient};color:#FFFFFF;font-weight:800;font-size:18px;line-height:48px;text-align:center;letter-spacing:0.5px">${esc(initials)}</div>`;
+}
+
+function ticketTagHtml(p) {
+  const role     = roleColours(p.role);
   const gradient = `linear-gradient(135deg, ${role.from} 0%, ${role.to} 100%)`;
 
   return `
@@ -121,9 +187,7 @@ function ticketTagHtml(p) {
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">
             <tr>
               <td valign="middle" width="56" style="padding-right:12px">
-                <div style="width:48px;height:48px;border-radius:10px;background:${gradient};color:#FFFFFF;font-weight:800;font-size:18px;line-height:48px;text-align:center;letter-spacing:0.5px">
-                  ${esc(initials)}
-                </div>
+                ${avatarHtml({ photo: p.attendeePhoto, name: p.attendeeName, gradient })}
               </td>
               <td valign="middle">
                 <div style="font-size:10px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#64748B;line-height:1.2">
@@ -179,6 +243,12 @@ const TEMPLATES = {
             shown at the top of the on-screen ticket page. Mirrors the React
             TicketTag.jsx so the email and the web feel like one product. */
         ticketTagHtml(p)}
+
+      ${/* Inline download buttons — give recipients on email clients that
+            collapse attachments (Outlook web, some Gmail mobile widgets) a
+            visible path to grab the ticket / badge / form without coming
+            back to the website. Same files as the attachments below. */
+        downloadButtonsHtml(downloadUrls(p))}
 
       <p style="margin:0 0 12px;font-size:14.5px">Hi ${esc(firstName)},</p>
       <p style="margin:0 0 18px;font-size:14.5px">
@@ -303,10 +373,34 @@ async function sendNow({ kind, channel, recipient, payload, dedupeKey, metadata 
 
   let result;
   if (channel === 'email') {
+    // Ticket confirmations carry three PDF attachments: the full ticket
+    // page, the printable CR80 badge, and the filled registration form.
+    // Generated lazily so other kinds (reminders, announcements) don't pay
+    // the PDF cost. Failures here are non-fatal — the email still sends
+    // with the inline HTML ticket and download buttons; we just skip
+    // attachments.
+    let attachments = null;
+    if (kind === 'ticket.confirmation' && payload?.ticketCode) {
+      try {
+        const [ticketPdf, badgePdf, formPdf] = await Promise.all([
+          buildTicketPdf(payload),
+          buildBadgePdf(payload),
+          buildFormPdf(payload),
+        ]);
+        attachments = [
+          { filename: `ticket-${payload.ticketCode}.pdf`, content: ticketPdf },
+          { filename: `badge-${payload.ticketCode}.pdf`,  content: badgePdf  },
+          { filename: `form-${payload.ticketCode}.pdf`,   content: formPdf   },
+        ];
+      } catch (e) {
+        console.warn('[notifications] PDF generation failed for', payload.ticketCode, '-', e.message);
+      }
+    }
     result = await sendMail({
       to:      recipient,
       subject: rendered.subject,
       html:    rendered.html,
+      attachments,
     });
   } else {
     if (!rendered.sms) {

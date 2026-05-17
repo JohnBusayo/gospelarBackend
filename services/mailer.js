@@ -34,8 +34,11 @@ function getConfig() {
  * @param {string} [args.text]        Plain-text fallback. Auto-derived from
  *                                    html if absent.
  * @param {string} [args.from]        Override sender; defaults to MAIL_FROM.
+ * @param {Array}  [args.attachments] Optional [{ filename, content }] where
+ *                                    content is a Buffer or a base64 string.
+ *                                    Forwarded to Resend's attachments field.
  */
-async function sendMail({ to, subject, html, text, from }) {
+async function sendMail({ to, subject, html, text, from, attachments }) {
   const cfg = getConfig();
   const finalFrom = from || cfg.from;
   if (!cfg.apiKey) {
@@ -50,6 +53,18 @@ async function sendMail({ to, subject, html, text, from }) {
   // plain-text version when the caller didn't provide one.
   const textBody = text || htmlToText(html);
 
+  // Normalise attachments: Resend wants base64 strings. Accept Buffers from
+  // callers (the PDF generator returns Buffers) and convert here so each
+  // caller doesn't repeat the toString('base64') dance.
+  const finalAttachments = Array.isArray(attachments) && attachments.length
+    ? attachments
+        .filter((a) => a && a.filename && a.content)
+        .map((a) => ({
+          filename: a.filename,
+          content:  Buffer.isBuffer(a.content) ? a.content.toString('base64') : String(a.content),
+        }))
+    : null;
+
   try {
     const r = await fetch(RESEND_URL, {
       method:  'POST',
@@ -63,6 +78,7 @@ async function sendMail({ to, subject, html, text, from }) {
         subject,
         html,
         text:    textBody,
+        ...(finalAttachments ? { attachments: finalAttachments } : {}),
       }),
     });
     const data = await r.json().catch(() => ({}));
