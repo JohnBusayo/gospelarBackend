@@ -85,11 +85,27 @@ router.get('/api/church-admin/learning/classes/:classId/students', churchAuth, a
     // for attendance / marks / points are correlated to the class so we
     // count only this class's activity (not the student's total across all
     // classes — that's what /learning/students is for).
+    //
+    // Two name sources matter: user_profiles.display_name is set by the
+    // mobile app *and* by the teacher when they add a student by name only
+    // (those students get a synthetic local_*@local.gofamint email — see
+    // routes/teacher.js). users.full_name is the auth-table fallback for
+    // app users with a real email. Coalesce display → full_name → email,
+    // and treat synthetic addresses as "no email" so we don't render the
+    // pseudo-email as a name when nothing else is on file.
     const r = await db.query(
       `SELECT cm.student_email                                     AS email,
-              COALESCE(u.full_name, cm.student_email)              AS name,
+              COALESCE(
+                NULLIF(TRIM(up.display_name), ''),
+                NULLIF(TRIM(u.full_name), ''),
+                CASE WHEN cm.student_email LIKE '%@local.gofamint'
+                     THEN 'Unnamed student'
+                     ELSE cm.student_email
+                END
+              )                                                    AS name,
               cm.joined_at,
               u.approval_status                                    AS status,
+              up.avatar_emoji,
               (SELECT COUNT(*)::int FROM attendance a
                  WHERE a.class_id = cm.class_id
                    AND LOWER(a.student_email) = LOWER(cm.student_email)
@@ -109,7 +125,8 @@ router.get('/api/church-admin/learning/classes/:classId/students', churchAuth, a
                               AND LOWER(tm.student_email) = LOWER(cm.student_email)), '-infinity'::timestamptz)
               )                                                    AS last_active_at
          FROM class_members cm
-         LEFT JOIN users u ON LOWER(u.email) = LOWER(cm.student_email)
+         LEFT JOIN user_profiles up ON LOWER(up.email) = LOWER(cm.student_email)
+         LEFT JOIN users         u  ON LOWER(u.email)  = LOWER(cm.student_email)
         WHERE cm.class_id = $1
         ORDER BY name ASC`,
       [classId],
