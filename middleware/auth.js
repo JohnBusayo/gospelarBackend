@@ -14,6 +14,24 @@
 
 const db = require('../db');
 
+// Bridges the churchdashboard approval system into the registration app's role
+// model: an email that is `admin_email` of an `approval_status='approved'`
+// church is treated as a registration super-admin on every authenticated
+// request. Un-approving the church (or changing admin_email) revokes super-
+// admin access on the very next request, since this runs live per call.
+// CLI-promoted admins (users.role='admin') short-circuit the lookup.
+async function effectiveRole(email, persistedRole) {
+  if (persistedRole === 'admin') return 'admin';
+  if (!email) return persistedRole || 'student';
+  const r = await db.query(
+    `SELECT 1 FROM churches
+      WHERE LOWER(admin_email) = LOWER($1) AND approval_status = 'approved'
+      LIMIT 1`,
+    [email],
+  );
+  return r.rows.length ? 'admin' : (persistedRole || 'student');
+}
+
 const adminAuth = (req, res, next) => {
   if (req.headers['x-admin-key'] !== process.env.ADMIN_SECRET)
     return res.status(403).json({ error: 'Forbidden' });
@@ -136,7 +154,7 @@ const userAuth = async (req, res, next) => {
       id: u.id,
       email: u.email,
       full_name: u.full_name || '',
-      role: u.role || 'student',
+      role: await effectiveRole(u.email, u.role),
     };
     next();
   } catch (e) {
@@ -161,4 +179,5 @@ module.exports = {
   userAuth, superAdminAuth,
   churchScope, branchScope,
   ROLE_PERMS,
+  effectiveRole,
 };

@@ -16,6 +16,7 @@ const db = require('../db');
 const { isValidEmail } = require('../utils/helpers');
 const { sendMail } = require('../services/mailer');
 const { sign: signToken, verify: verifyToken } = require('../services/downloadTokens');
+const { effectiveRole } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -119,7 +120,12 @@ router.post('/api/auth/login', async (req, res) => {
     console.log('[Auth] Login: %s (force=%s)', user.email, force);
     res.json({
       message: 'Login successful!',
-      user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role || 'student' },
+      user: {
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name,
+        role: await effectiveRole(user.email, user.role),
+      },
       profile: prof.rows[0] || null, token,
     });
   } catch (e) { console.error('login:', e.message); res.status(500).json({ error: 'Login failed.' }); }
@@ -186,7 +192,12 @@ async function issueSession(user, provider) {
   const prof = await db.query('SELECT * FROM user_profiles WHERE email=$1', [user.email]);
   console.log('[Auth] Passwordless login: %s (provider=%s)', user.email, provider);
   return {
-    user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role || 'student' },
+    user: {
+      id: user.id,
+      email: user.email,
+      full_name: user.full_name,
+      role: await effectiveRole(user.email, user.role),
+    },
     profile: prof.rows[0] || null,
     token,
   };
