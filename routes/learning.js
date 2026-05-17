@@ -50,6 +50,86 @@ router.get('/api/church-admin/learning/classes', churchAuth, async (req, res) =>
   }
 });
 
+// Roster for a single class. Returns the students enrolled in the class
+// (via class_members) plus per-student engagement stats so the church-admin
+// "click a class to see students" panel can show useful context inline
+// without a second round-trip. Church-scoped — a class that doesn't belong
+// to req.church.id returns 404 even if it exists in another tenant.
+router.get('/api/church-admin/learning/classes/:classId/students', churchAuth, async (req, res) => {
+  if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
+  const classId = parseInt(req.params.classId, 10);
+  if (!Number.isFinite(classId)) return res.status(400).json({ error: 'Invalid class id.' });
+  try {
+    // Verify the class belongs to this church (and to the active branch when
+    // one is selected) before exposing the roster. Returning the class row
+    // alongside the students lets the client render a header without a
+    // separate fetch.
+    const params = [classId, req.church.id];
+    let where = 'c.id = $1 AND c.church_id = $2';
+    if (req.activeBranchId) {
+      params.push(req.activeBranchId);
+      where += ` AND c.branch_id = $${params.length}`;
+    }
+    const cls = await db.query(
+      `SELECT c.id, c.name, c.category, c.invite_code, c.teacher_email,
+              c.branch_id, c.created_at,
+              u.full_name AS teacher_name
+         FROM classes c
+         LEFT JOIN users u ON LOWER(u.email) = LOWER(c.teacher_email)
+        WHERE ${where}`,
+      params,
+    );
+    if (!cls.rows.length) return res.status(404).json({ error: 'Class not found.' });
+
+    // Per-student engagement stats joined in a single query. The subqueries
+    // for attendance / marks / points are correlated to the class so we
+    // count only this class's activity (not the student's total across all
+    // classes — that's what /learning/students is for).
+    const r = await db.query(
+      `SELECT cm.student_email                                     AS email,
+              COALESCE(u.full_name, cm.student_email)              AS name,
+              cm.joined_at,
+              u.approval_status                                    AS status,
+              (SELECT COUNT(*)::int FROM attendance a
+                 WHERE a.class_id = cm.class_id
+                   AND LOWER(a.student_email) = LOWER(cm.student_email)
+                   AND a.present = TRUE)                           AS attendance_count,
+              (SELECT COUNT(*)::int FROM teacher_marks tm
+                 WHERE tm.class_id = cm.class_id
+                   AND LOWER(tm.student_email) = LOWER(cm.student_email)) AS marks_count,
+              (SELECT COALESCE(SUM(tm.points), 0)::int FROM teacher_marks tm
+                 WHERE tm.class_id = cm.class_id
+                   AND LOWER(tm.student_email) = LOWER(cm.student_email)) AS total_points,
+              GREATEST(
+                COALESCE((SELECT MAX(a.marked_at) FROM attendance a
+                            WHERE a.class_id = cm.class_id
+                              AND LOWER(a.student_email) = LOWER(cm.student_email)), '-infinity'::timestamptz),
+                COALESCE((SELECT MAX(tm.awarded_at) FROM teacher_marks tm
+                            WHERE tm.class_id = cm.class_id
+                              AND LOWER(tm.student_email) = LOWER(cm.student_email)), '-infinity'::timestamptz)
+              )                                                    AS last_active_at
+         FROM class_members cm
+         LEFT JOIN users u ON LOWER(u.email) = LOWER(cm.student_email)
+        WHERE cm.class_id = $1
+        ORDER BY name ASC`,
+      [classId],
+    );
+    // Convert the sentinel '-infinity' we used for the GREATEST() fallback
+    // back to null so the client can render "Never" without a date check.
+    const students = r.rows.map((s) => ({
+      ...s,
+      last_active_at:
+        !s.last_active_at || new Date(s.last_active_at).getFullYear() < 1900
+          ? null
+          : s.last_active_at,
+    }));
+    res.json({ class: cls.rows[0], students, count: students.length });
+  } catch (e) {
+    console.error('GET /api/church-admin/learning/classes/:classId/students:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load class roster.' });
+  }
+});
+
 router.get('/api/church-admin/learning/students', churchAuth, async (req, res) => {
   if (!req.church) return res.status(400).json({ error: 'super-admin call — no church scope' });
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
