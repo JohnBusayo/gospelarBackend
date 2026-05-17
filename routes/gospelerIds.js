@@ -101,6 +101,8 @@ function toPublic(row) {
     region:          row.region,
     district:        row.district,
     assembly:        row.assembly,
+    emergency_contact_name:  row.emergency_contact_name,
+    emergency_contact_phone: row.emergency_contact_phone,
     verified:        row.verified,
     issued_at:       row.issued_at,
     updated_at:      row.updated_at,
@@ -143,6 +145,16 @@ function normaliseBody(body) {
   if (body.church_status !== undefined) {
     const code = String(body.church_status || '').trim().toUpperCase().slice(0, 20);
     out.church_status = code || null;
+  }
+  if (body.emergency_contact_name !== undefined) {
+    out.emergency_contact_name = trim(body.emergency_contact_name)
+      ? String(body.emergency_contact_name).slice(0, 120)
+      : null;
+  }
+  if (body.emergency_contact_phone !== undefined) {
+    out.emergency_contact_phone = trim(body.emergency_contact_phone)
+      ? String(body.emergency_contact_phone).slice(0, 40)
+      : null;
   }
   return out;
 }
@@ -213,9 +225,10 @@ router.post('/api/gospeler-id/:email', async (req, res) => {
       `INSERT INTO gospeler_ids
          (id, email, gospeler_code, version, full_name, phone, church_name, church_branch,
           country, state_province, gender, date_of_birth, photo_base64, membership_role,
-          title, church_status, age_bracket, city, region, district, assembly)
+          title, church_status, age_bracket, city, region, district, assembly,
+          emergency_contact_name, emergency_contact_phone)
        VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-               $14, $15, $16, $17, $18, $19, $20)
+               $14, $15, $16, $17, $18, $19, $20, $21, $22)
        RETURNING *`,
       [
         id, email, gospeler_code,
@@ -225,6 +238,7 @@ router.post('/api/gospeler-id/:email', async (req, res) => {
         body.membership_role || 'member',
         body.title || null, body.church_status || null, body.age_bracket || null,
         body.city || null, body.region || null, body.district || null, body.assembly || null,
+        body.emergency_contact_name || null, body.emergency_contact_phone || null,
       ]
     );
     res.status(201).json(toPublic(r.rows[0]));
@@ -295,9 +309,11 @@ router.put('/api/gospeler-id/:email', async (req, res) => {
             region          = $17,
             district        = $18,
             assembly        = $19,
+            emergency_contact_name  = $20,
+            emergency_contact_phone = $21,
             verified        = FALSE,
             updated_at      = NOW()
-          WHERE LOWER(email) = $20
+          WHERE LOWER(email) = $22
           RETURNING *`,
         [
           id, gospeler_code, next.full_name, next.phone, next.church_name, next.church_branch,
@@ -305,6 +321,7 @@ router.put('/api/gospeler-id/:email', async (req, res) => {
           next.membership_role || 'member',
           next.title, next.church_status, next.age_bracket,
           next.city, next.region, next.district, next.assembly,
+          next.emergency_contact_name, next.emergency_contact_phone,
           email,
         ]
       );
@@ -316,24 +333,27 @@ router.put('/api/gospeler-id/:email', async (req, res) => {
     // contact info, or denominational metadata without rotating their QR.
     const r = await db.query(
       `UPDATE gospeler_ids SET
-          phone          = $1,
-          country        = $2,
-          state_province = $3,
-          gender         = $4,
-          date_of_birth  = $5,
-          photo_base64   = $6,
-          title          = $7,
-          age_bracket    = $8,
-          city           = $9,
-          region         = $10,
-          district       = $11,
-          updated_at     = NOW()
-        WHERE LOWER(email) = $12
+          phone                   = $1,
+          country                 = $2,
+          state_province          = $3,
+          gender                  = $4,
+          date_of_birth           = $5,
+          photo_base64            = $6,
+          title                   = $7,
+          age_bracket             = $8,
+          city                    = $9,
+          region                  = $10,
+          district                = $11,
+          emergency_contact_name  = $12,
+          emergency_contact_phone = $13,
+          updated_at              = NOW()
+        WHERE LOWER(email) = $14
         RETURNING *`,
       [
         next.phone, next.country, next.state_province, next.gender,
         next.date_of_birth, next.photo_base64,
         next.title, next.age_bracket, next.city, next.region, next.district,
+        next.emergency_contact_name, next.emergency_contact_phone,
         email,
       ]
     );

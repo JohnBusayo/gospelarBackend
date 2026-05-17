@@ -10,14 +10,12 @@
 // single backend deploy. Never duplicate these lists into the mobile bundle
 // or webapp bundle — fetch them.
 
-// Honorifics. First few are universal; the rest are denomination-specific
-// (Pastor, Evangelist, Apostle, Bishop, Rev., Deacon, Deaconess, Elder,
-// Brother). Keep the order roughly secular → clerical so secular-first users
-// don't have to scroll.
+// Denomination-specific honorifics. Order is lay → clergy so the lay-majority
+// users hit their option first. Secular honorifics (Mr, Mrs, Dr, etc.) were
+// removed at the denomination's request — the church-records system this form
+// feeds into only recognises in-church titles.
 const TITLES = [
-  'Mr', 'Mrs', 'Miss', 'Dr', 'Prof',
-  'Pastor', 'Evangelist', 'Apostle', 'Bishop', 'Rev.',
-  'Deacon', 'Deaconess', 'Elder', 'Brother',
+  'Brother', 'Sister', 'Deacon', 'Deaconess', 'Elder', 'Evangelist', 'Pastor',
 ];
 
 // Biological sex (separate from gender expression). Two options is sufficient
