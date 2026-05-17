@@ -928,6 +928,108 @@ const initDb = async () => {
     `ALTER TABLE gospeler_ids ADD COLUMN IF NOT EXISTS region         VARCHAR(120)`,
     `ALTER TABLE gospeler_ids ADD COLUMN IF NOT EXISTS district       VARCHAR(120)`,
     `ALTER TABLE gospeler_ids ADD COLUMN IF NOT EXISTS assembly       VARCHAR(200)`,
+    // Emergency contact — same shape (name + phone) as the registration
+    // webapp collects at event check-in. Storing it on the Gospeler ID lets
+    // the registration auto-fill kick in here too, so members don't retype
+    // their emergency contact for every event they register for.
+    `ALTER TABLE gospeler_ids ADD COLUMN IF NOT EXISTS emergency_contact_name  VARCHAR(120)`,
+    `ALTER TABLE gospeler_ids ADD COLUMN IF NOT EXISTS emergency_contact_phone VARCHAR(40)`,
+
+    // ── Events / registration / tickets ────────────────────────────────────
+    // Authoritative store for the gospelar registration webapp. The frontend
+    // previously persisted to localStorage; now it pushes through these tables
+    // via routes/events.js so tickets, capacity, and check-in state survive
+    // across devices and sessions.
+    //
+    // event id is a TEXT slug (`retreat-2026-spring`, `youth-camp-q3`), set by
+    // the admin form. Same approach the localStorage store used, so existing
+    // mockData seeds line up if a dev wants to import them.
+    `CREATE TABLE IF NOT EXISTS events (
+       id                     TEXT         PRIMARY KEY,
+       church_id              TEXT,
+       title                  TEXT         NOT NULL,
+       tagline                TEXT,
+       summary                TEXT,
+       starts_at              TIMESTAMPTZ,
+       ends_at                TIMESTAMPTZ,
+       registration_deadline  TIMESTAMPTZ,
+       location               TEXT,
+       cover_color            TEXT,
+       banner_url             TEXT,
+       schedule               JSONB,
+       status                 TEXT         NOT NULL DEFAULT 'published',
+       created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+       updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_events_status_starts ON events(status, starts_at DESC)`,
+
+    // One row per ticket tier inside an event. (event_id, type_id) is the PK
+    // so the admin form's "Standard", "Student", "Staff" stay stable across
+    // edits — handlers UPSERT on the pair, never blowing away ticket history.
+    `CREATE TABLE IF NOT EXISTS event_ticket_types (
+       event_id     TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+       type_id      TEXT NOT NULL,
+       name         TEXT NOT NULL,
+       description  TEXT,
+       price_cents  INT  NOT NULL DEFAULT 0,
+       capacity     INT  NOT NULL DEFAULT 0,
+       sold         INT  NOT NULL DEFAULT 0,
+       role         TEXT NOT NULL DEFAULT 'attendee',
+       sort_order   INT  NOT NULL DEFAULT 0,
+       PRIMARY KEY (event_id, type_id)
+     )`,
+
+    // Same shape as ticket types — separate table because accommodation has
+    // sharing/bed-count semantics ticket tiers don't.
+    `CREATE TABLE IF NOT EXISTS event_accommodation (
+       event_id      TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+       acc_id        TEXT NOT NULL,
+       name          TEXT NOT NULL,
+       description   TEXT,
+       type          TEXT,
+       sharing       TEXT,
+       beds_per_room INT,
+       price_cents   INT  NOT NULL DEFAULT 0,
+       capacity      INT  NOT NULL DEFAULT 0,
+       taken         INT  NOT NULL DEFAULT 0,
+       sort_order    INT  NOT NULL DEFAULT 0,
+       PRIMARY KEY (event_id, acc_id)
+     )`,
+
+    // Issued tickets. `code` is the human-shareable identifier (`TKT-A23B7`)
+    // and the FK target for check-in/email/SMS endpoints. attendee_profile
+    // captures the full registration form (title, sex, region, district…) as
+    // JSON so the schema stays flat without losing per-attendee context.
+    `CREATE TABLE IF NOT EXISTS event_tickets (
+       code               TEXT         PRIMARY KEY,
+       event_id           TEXT         NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+       ticket_type_id     TEXT,
+       accommodation_id   TEXT,
+       group_id           TEXT,
+       group_type         TEXT,
+       group_name         TEXT,
+       group_lead_email   TEXT,
+       attendee_name      TEXT         NOT NULL,
+       attendee_email     TEXT,
+       attendee_phone     TEXT,
+       attendee_profile   JSONB,
+       age_group          TEXT,
+       dietary            TEXT,
+       emergency_name     TEXT,
+       emergency_phone    TEXT,
+       room_label         TEXT,
+       seat_label         TEXT,
+       role               TEXT         NOT NULL DEFAULT 'attendee',
+       referrer           TEXT,
+       status             TEXT         NOT NULL DEFAULT 'confirmed',
+       ticket_url         TEXT,
+       purchased_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+       checked_in_at      TIMESTAMPTZ,
+       updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_event_tickets_event ON event_tickets(event_id, purchased_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_event_tickets_email ON event_tickets(LOWER(attendee_email)) WHERE attendee_email IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_event_tickets_group ON event_tickets(group_id) WHERE group_id IS NOT NULL`,
   ];
 
   for (const sql of steps) {

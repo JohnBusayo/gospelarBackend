@@ -57,24 +57,165 @@ function esc(s) {
   ));
 }
 
+// Hosted QR generator — same service the web ticket uses. We encode the
+// check-in URL so a scanner at the door opens the staff flow directly.
+// PUBLIC_APP_URL gives a sensible origin when the ticket payload didn't
+// include a full ticketUrl (older clients, programmatic test sends, etc).
+function ticketQrSrc(payload) {
+  const origin = (process.env.PUBLIC_APP_URL || 'https://gospelar.app').replace(/\/$/, '');
+  const target = `${origin}/check-in?code=${encodeURIComponent(payload.ticketCode || '')}`;
+  return `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(target)}`;
+}
+
+// Format an ISO datetime for the human-friendly "When" line. Leaves
+// pre-formatted strings (e.g. from event.reminder) untouched.
+function fmtWhen(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleString('en-NG', {
+    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
+}
+
+// One <tr> in the right-hand details table. Skipped when value is empty
+// so the email doesn't grow useless rows for unfilled fields.
+function detailRow(label, value) {
+  if (value == null || value === '') return '';
+  return `<tr>
+    <td style="padding:6px 12px 6px 0;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#64748B;white-space:nowrap;vertical-align:top">${esc(label)}</td>
+    <td style="padding:6px 0;font-size:14px;color:#0F172A">${value}</td>
+  </tr>`;
+}
+
+// Role colour palette — mirrors TICKET_ROLES in the frontend's mockData.js
+// so the digital tag (web) and the email tag stay visually consistent.
+// Each entry is a {from,to} colour pair used to build a linear-gradient.
+const ROLE_GRADIENTS = {
+  attendee: { from: '#0EA5E9', to: '#4F46E5', label: 'Attendee' },  // sky → indigo
+  staff:    { from: '#10B981', to: '#0F766E', label: 'Staff'    },  // emerald → teal
+  speaker:  { from: '#F59E0B', to: '#E11D48', label: 'Speaker'  },  // amber → rose
+};
+
+function roleColours(role) {
+  return ROLE_GRADIENTS[String(role || 'attendee').toLowerCase()] || ROLE_GRADIENTS.attendee;
+}
+
+// HTML version of the TicketTag React component — same visual idea (role-
+// coloured stripe + avatar + name + code + role pill) using nested tables so
+// Gmail/Outlook lay it out cleanly. Rendered as the hero of the email so the
+// recipient sees what they need before scrolling.
+function ticketTagHtml(p) {
+  const role     = roleColours(p.role);
+  const initials = String(p.attendeeName || '?')
+    .split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((w) => (w[0] || '').toUpperCase()).join('') || '?';
+  const gradient = `linear-gradient(135deg, ${role.from} 0%, ${role.to} 100%)`;
+
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:14px;overflow:hidden;margin:0 0 18px">
+      <tr>
+        <td width="8" style="background:${gradient};padding:0;width:8px;line-height:0;font-size:0">&nbsp;</td>
+        <td style="padding:14px 16px">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">
+            <tr>
+              <td valign="middle" width="56" style="padding-right:12px">
+                <div style="width:48px;height:48px;border-radius:10px;background:${gradient};color:#FFFFFF;font-weight:800;font-size:18px;line-height:48px;text-align:center;letter-spacing:0.5px">
+                  ${esc(initials)}
+                </div>
+              </td>
+              <td valign="middle">
+                <div style="font-size:10px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#64748B;line-height:1.2">
+                  <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${gradient};color:#FFFFFF;letter-spacing:0.14em">${esc(role.label)}</span>
+                  ${p.eventTitle ? `<span style="color:#94A3B8;margin-left:8px">${esc(p.eventTitle)}</span>` : ''}
+                </div>
+                <div style="font-weight:800;font-size:15px;color:#0F172A;margin-top:4px;letter-spacing:-0.2px">${esc(p.attendeeName || 'Attendee')}</div>
+                <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#475569;margin-top:2px">${esc(p.ticketCode)}</div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
 const TEMPLATES = {
   // Event registration confirmation — fires once per attendee right after
-  // a successful POST /register. Payload: { eventTitle, attendeeName,
-  // ticketCode, eventStartsAt?, eventLocation?, ticketUrl? }
-  'ticket.confirmation': (p) => ({
-    subject: `You're registered — ${p.eventTitle || 'event'}`,
-    html: shellEmail(
-      `✓ You're registered for ${esc(p.eventTitle)}`,
-      `<p style="margin:0 0 14px">Hi ${esc(p.attendeeName || 'there')},</p>
-       <p style="margin:0 0 14px">Your registration is confirmed. Your ticket code is
-       <strong style="font-family:ui-monospace,Menlo,monospace">${esc(p.ticketCode)}</strong>.</p>
-       ${p.eventStartsAt ? `<p style="margin:0 0 14px">📅 ${esc(p.eventStartsAt)}</p>` : ''}
-       ${p.eventLocation  ? `<p style="margin:0 0 14px">📍 ${esc(p.eventLocation)}</p>` : ''}
-       <p style="margin:0">Save this email — show the ticket code on arrival for check-in.</p>`,
-      p.ticketUrl, 'View ticket →',
-    ),
-    sms: `${BRAND}: You're registered for ${p.eventTitle}. Ticket: ${p.ticketCode}. Show this code at check-in.`,
-  }),
+  // a successful POST /register. The email is the ticket: it includes a
+  // scannable QR, the banner, and the full ticket details so an attendee
+  // can show it at the door without first opening the web ticket.
+  // Payload: { eventTitle, attendeeName, ticketCode, eventStartsAt?,
+  //   eventLocation?, ticketUrl?, ticketTypeName?, accommodationName?,
+  //   roomLabel?, seatLabel?, groupName? }
+  'ticket.confirmation': (p) => {
+    const firstName = String(p.attendeeName || '').trim().split(/\s+/)[0] || 'there';
+    const qrUrl     = ticketQrSrc(p);
+    const whenLine  = fmtWhen(p.eventStartsAt);
+    const rowsHtml  = [
+      detailRow('Event', esc(p.eventTitle || '—')),
+      detailRow('When',  whenLine ? esc(whenLine) : null),
+      detailRow('Where', p.eventLocation ? esc(p.eventLocation) : null),
+      detailRow('Ticket', p.ticketTypeName ? esc(p.ticketTypeName) : null),
+      detailRow('Room',  p.accommodationName ? esc(p.accommodationName) : null),
+      detailRow('Assigned', p.roomLabel ? esc(p.roomLabel) : null),
+      detailRow('Seat',  p.seatLabel ? `<strong style="font-weight:700">${esc(p.seatLabel)}</strong>` : null),
+      detailRow('Group', p.groupName ? esc(p.groupName) : null),
+      detailRow('Code',  `<span style="font-family:ui-monospace,Menlo,monospace;font-weight:700">${esc(p.ticketCode)}</span>`),
+    ].join('');
+
+    // The visual ticket sits inside shellEmail's body slot. We use a single
+    // wide table so Gmail/Outlook lay out the QR + details cleanly — flex
+    // and grid both fall apart in email clients, but nested tables work.
+    const bodyHtml = `
+      <div style="border-radius:12px;overflow:hidden;background:linear-gradient(135deg,#2563EB 0%,#DB2777 100%);color:#FFFFFF;padding:22px 24px;margin:0 0 18px">
+        <div style="font-size:11px;font-weight:800;letter-spacing:0.22em;text-transform:uppercase;opacity:0.9">You're in!</div>
+        <div style="margin-top:6px;font-size:20px;font-weight:900;letter-spacing:-0.3px;line-height:1.25">${esc(p.eventTitle || 'Event')}</div>
+        ${whenLine || p.eventLocation ? `<div style="margin-top:8px;font-size:13px;opacity:0.92">${[whenLine ? esc(whenLine) : '', p.eventLocation ? esc(p.eventLocation) : ''].filter(Boolean).join(' &nbsp;·&nbsp; ')}</div>` : ''}
+      </div>
+
+      ${/* Quick-flash digital tag — the lightweight version of the ticket
+            shown at the top of the on-screen ticket page. Mirrors the React
+            TicketTag.jsx so the email and the web feel like one product. */
+        ticketTagHtml(p)}
+
+      <p style="margin:0 0 12px;font-size:14.5px">Hi ${esc(firstName)},</p>
+      <p style="margin:0 0 18px;font-size:14.5px">
+        Thanks for registering for <strong>${esc(p.eventTitle || 'this event')}</strong>.
+        Your ticket is below — show this QR code at check-in, or read out the code
+        <span style="font-family:ui-monospace,Menlo,monospace;font-weight:700">${esc(p.ticketCode)}</span>.
+      </p>
+
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin:0 0 22px">
+        <tr>
+          <td valign="top" style="padding:0 16px 0 0;width:200px">
+            <img src="${qrUrl}" alt="QR code for ticket ${esc(p.ticketCode)}" width="180" height="180" style="display:block;width:180px;height:180px;border:1px solid #E2E8F0;border-radius:12px;background:#FFFFFF" />
+          </td>
+          <td valign="top">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">${rowsHtml}</table>
+          </td>
+        </tr>
+      </table>
+
+      <p style="margin:0 0 10px;font-size:14px;color:#334155">
+        Need to make changes? Reply to this email and we'll help.
+      </p>
+      <p style="margin:0;font-size:14px;color:#334155">
+        Grace and peace,<br/><strong>The Gospelar team</strong>
+      </p>
+    `;
+
+    return {
+      subject: `You're registered — ${p.eventTitle || 'event'}`,
+      html: shellEmail(
+        `Your ticket for ${esc(p.eventTitle || 'the event')}`,
+        bodyHtml,
+        p.ticketUrl, 'Open ticket online →',
+      ),
+      sms: `${BRAND}: You're registered for ${p.eventTitle}. Ticket: ${p.ticketCode}. Show this code at check-in.`,
+    };
+  },
 
   // T-7, T-1day, T-1hour reminders. Payload: same as confirmation plus { whenLabel }.
   'event.reminder': (p) => ({

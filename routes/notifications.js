@@ -21,15 +21,24 @@ const router = express.Router();
 
 // Build a `ticket.confirmation`/`event.reminder` payload from a frontend-
 // supplied Ticket object. Keeps the route handlers tiny — they just hand
-// over the `ticket` body and let this helper map field names.
+// over the `ticket` body and let this helper map field names. The full
+// shape lets the email template render a self-contained visual ticket
+// (banner + QR + details) rather than just a code + link.
 function ticketPayload(ticket, extra = {}) {
   return {
-    eventTitle:    ticket.eventTitle || '',
-    attendeeName:  ticket.attendeeName || '',
-    ticketCode:    ticket.code || '',
-    eventStartsAt: ticket.eventStartsAt || extra.eventStartsAt || null,
-    eventLocation: ticket.eventLocation || extra.eventLocation || null,
-    ticketUrl:     ticket.ticketUrl     || extra.ticketUrl     || null,
+    eventTitle:        ticket.eventTitle || '',
+    attendeeName:      ticket.attendeeName || '',
+    attendeeEmail:     ticket.attendeeEmail || '',
+    ticketCode:        ticket.code || '',
+    eventStartsAt:     ticket.eventStartsAt || extra.eventStartsAt || null,
+    eventLocation:     ticket.eventLocation || extra.eventLocation || null,
+    ticketUrl:         ticket.ticketUrl     || extra.ticketUrl     || null,
+    ticketTypeName:    ticket.ticketTypeName || null,
+    accommodationName: ticket.accommodationName || null,
+    roomLabel:         ticket.roomLabel || null,
+    seatLabel:         ticket.seatLabel || null,
+    groupName:         ticket.groupName || null,
+    groupType:         ticket.groupType || null,
     ...extra,
   };
 }
@@ -49,19 +58,33 @@ function fmtEventStart(iso) {
 }
 
 // POST /api/notifications/email-ticket  body: { to, ticket }
+// `to` lets the registrar CC a copy to the primary registrant whose email
+// differs from the attendee on the ticket. The dedupe key bakes in `to`
+// so the registrant copy and the attendee copy don't collide.
 router.post('/api/notifications/email-ticket', async (req, res) => {
-  const to     = String(req.body?.to || '').trim();
+  const to     = String(req.body?.to || '').trim().toLowerCase();
   const ticket = req.body?.ticket || {};
   if (!isValidEmail(to))   return res.status(400).json({ ok: false, error: 'Invalid recipient email.' });
   if (!ticket.code)        return res.status(400).json({ ok: false, error: 'ticket.code is required.' });
+
+  const ownerEmail = String(ticket.attendeeEmail || '').toLowerCase();
+  const isCopy     = ownerEmail && ownerEmail !== to;
 
   const r = await sendNow({
     kind: 'ticket.confirmation',
     channel: 'email',
     recipient: to,
     payload: ticketPayload(ticket),
-    dedupeKey: `email:ticket.confirmation:${ticket.code}`,
-    metadata: { ticketCode: ticket.code, eventId: ticket.eventId || null },
+    // Distinct dedupe key per recipient so the attendee and the registrant
+    // (when CC'd) each get exactly one copy. `isCopy` flag in the suffix
+    // documents the second send for log readers.
+    dedupeKey: `ticket:${ticket.code}:email:confirmation:${to}`,
+    metadata: {
+      ticketCode: ticket.code,
+      eventId:    ticket.eventId || null,
+      groupId:    ticket.groupId || null,
+      ...(isCopy ? { registrantCopy: true, attendeeEmail: ownerEmail } : {}),
+    },
   });
   res.json({ ok: r.ok, id: r.id || null, error: r.error || null, dedupeHit: r.dedupeHit || false });
 });
@@ -78,8 +101,8 @@ router.post('/api/notifications/sms-ticket', async (req, res) => {
     channel: 'sms',
     recipient: to,
     payload: ticketPayload(ticket),
-    dedupeKey: `sms:ticket.confirmation:${ticket.code}`,
-    metadata: { ticketCode: ticket.code, eventId: ticket.eventId || null },
+    dedupeKey: `ticket:${ticket.code}:sms:confirmation`,
+    metadata: { ticketCode: ticket.code, eventId: ticket.eventId || null, groupId: ticket.groupId || null },
   });
   res.json({ ok: r.ok, id: r.id || null, error: r.error || null, dedupeHit: r.dedupeHit || false });
 });
@@ -329,120 +352,6 @@ router.post('/api/admin/notifications/broadcast', adminAuth, async (req, res) =>
   if (!recipients.length) return res.json({ sent: 0, failed: 0, results: [], note: 'No recipients matched.' });
 
   const result = await broadcast({ kind, recipients, payload, channels });
-  res.json(result);
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Ticket-scoped sends (called by the registration frontend post-submit).
-// The frontend hands us the full ticket object — backend has no events/
-// tickets table, so it can't look these up by code on its own. Dedupe key
-// is `(ticketCode, channel, kind)` so re-tries don't double-send.
-// ─────────────────────────────────────────────────────────────────────────────
-
-router.post('/api/notifications/email-ticket', async (req, res) => {
-  const to     = String(req.body?.to || '').trim().toLowerCase();
-  const ticket = req.body?.ticket || null;
-  if (!isValidEmail(to)) return res.status(400).json({ ok: false, error: 'Invalid recipient email.' });
-  if (!ticket?.code)     return res.status(400).json({ ok: false, error: 'ticket.code is required.' });
-
-  const result = await sendNow({
-    kind:      'ticket.confirmation',
-    channel:   'email',
-    recipient: to,
-    payload:   ticketPayload(ticket),
-    dedupeKey: `ticket:${ticket.code}:email:confirmation`,
-    metadata:  { ticketCode: ticket.code, eventId: ticket.eventId || null, groupId: ticket.groupId || null },
-  });
-  res.json({ ok: result.ok, id: result.id || null, error: result.error || null, dedupeHit: result.dedupeHit || false });
-});
-
-router.post('/api/notifications/sms-ticket', async (req, res) => {
-  const to     = String(req.body?.to || '').trim();
-  const ticket = req.body?.ticket || null;
-  if (!normalizePhone(to)) return res.status(400).json({ ok: false, error: 'Invalid recipient phone.' });
-  if (!ticket?.code)       return res.status(400).json({ ok: false, error: 'ticket.code is required.' });
-
-  const result = await sendNow({
-    kind:      'ticket.confirmation',
-    channel:   'sms',
-    recipient: to,
-    payload:   ticketPayload(ticket),
-    dedupeKey: `ticket:${ticket.code}:sms:confirmation`,
-    metadata:  { ticketCode: ticket.code, eventId: ticket.eventId || null, groupId: ticket.groupId || null },
-  });
-  res.json({ ok: result.ok, id: result.id || null, error: result.error || null, dedupeHit: result.dedupeHit || false });
-});
-
-// Schedule a reminder (or several — one per channel). Dedupe key is
-// `(ticketCode, channel, kind)` so re-firing on a network retry won't
-// double-queue. Past `sendAt` values are accepted but the worker will
-// dispatch them on its next tick, which is the desired behaviour for
-// "send immediately if missed."
-router.post('/api/notifications/schedule-reminder', async (req, res) => {
-  const ticket   = req.body?.ticket || null;
-  const sendAt   = req.body?.sendAt;
-  const kind     = String(req.body?.kind || 'event.reminder');
-  const channels = Array.isArray(req.body?.channels) && req.body.channels.length
-    ? req.body.channels.map((c) => String(c).toLowerCase()).filter((c) => ['email', 'sms'].includes(c))
-    : ['email'];
-
-  if (!ticket?.code)         return res.status(400).json({ ok: false, error: 'ticket.code is required.' });
-  if (!ticket?.attendeeEmail) return res.status(400).json({ ok: false, error: 'ticket.attendeeEmail is required.' });
-  if (!sendAt || Number.isNaN(new Date(sendAt).getTime())) {
-    return res.status(400).json({ ok: false, error: 'sendAt must be a valid ISO date.' });
-  }
-
-  // Friendly when-label so the reminder template doesn't have to compute it.
-  const whenLabel =
-    kind === 'event_t_minus_1d' ? 'tomorrow' :
-    kind === 'event_t_minus_1h' ? 'in about an hour' :
-    'coming up';
-
-  const payload = ticketPayload(ticket, { whenLabel });
-
-  const results = [];
-  for (const channel of channels) {
-    const recipient = channel === 'email' ? ticket.attendeeEmail : ticket.attendeePhone;
-    if (!recipient) {
-      results.push({ channel, ok: false, error: `No ${channel} recipient on ticket.` });
-      continue;
-    }
-    const r = await schedule({
-      kind:      'event.reminder',
-      channel,
-      recipient,
-      payload,
-      runAt:     new Date(sendAt).toISOString(),
-      dedupeKey: `ticket:${ticket.code}:${channel}:${kind}`,
-    });
-    results.push({ channel, ...r });
-  }
-
-  res.json({ ok: results.every((r) => r.ok), results });
-});
-
-// Convenience alias for the registration frontend's announcement shape:
-//   { eventId, subject, message, recipients: [{email, phone?, name?}], channels }
-// Maps to the broader /api/admin/notifications/broadcast endpoint with the
-// `announcement` template. Admin-gated.
-router.post('/api/admin/notifications/announce', adminAuth, async (req, res) => {
-  const eventId    = req.body?.eventId || null;
-  const subject    = req.body?.subject || null;
-  const message    = req.body?.message || '';
-  const recipients = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
-  const channels   = Array.isArray(req.body?.channels) && req.body.channels.length
-    ? req.body.channels.map((c) => String(c).toLowerCase()).filter((c) => ['email', 'sms'].includes(c))
-    : ['email'];
-
-  if (!subject && !message) return res.status(400).json({ error: 'Provide a subject or message.' });
-  if (!recipients.length)    return res.json({ sent: 0, failed: 0, results: [], note: 'No recipients.' });
-
-  const result = await broadcast({
-    kind: 'announcement',
-    recipients,
-    channels,
-    payload: { subject, body: message, eventId },
-  });
   res.json(result);
 });
 
