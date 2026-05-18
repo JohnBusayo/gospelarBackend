@@ -1048,6 +1048,14 @@ const initDb = async () => {
        ON event_tickets(registered_by_user_id) WHERE registered_by_user_id IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_event_tickets_registered_by_email
        ON event_tickets(LOWER(registered_by_email)) WHERE registered_by_email IS NOT NULL`,
+
+    // Custom registration questions defined per event (currently set by the
+    // wedding template and any future RSVP-style template). When non-null,
+    // the registration page renders THESE questions instead of the long
+    // default attendee form. Each event_tickets row stores the registrant's
+    // answers in custom_answers as { question_id: answer_value }.
+    `ALTER TABLE events         ADD COLUMN IF NOT EXISTS custom_questions JSONB`,
+    `ALTER TABLE event_tickets  ADD COLUMN IF NOT EXISTS custom_answers   JSONB`,
   ];
 
   for (const sql of steps) {

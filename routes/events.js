@@ -48,6 +48,7 @@ function eventRow(row, types = [], accommodation = []) {
     status:                row.status || 'published',
     creatorEmail:          row.creator_email || null,
     requiresLogin:         !!row.requires_login,
+    customQuestions:       row.custom_questions || null,
     ticketTypes:           types,
     accommodation:         accommodation,
     createdAt:             row.created_at,
@@ -103,6 +104,7 @@ function ticketRow(r) {
     attendeeEmail:     r.attendee_email,
     attendeePhone:     r.attendee_phone || '',
     attendeeProfile:   r.attendee_profile || {},
+    customAnswers:     r.custom_answers || null,
     // Promoted from attendee_profile.photo so callers (and email templates)
     // can read it as a flat field without knowing the JSON shape.
     attendeePhoto:     (r.attendee_profile && r.attendee_profile.photo) || null,
@@ -189,8 +191,8 @@ async function upsertEvent(ev) {
     `INSERT INTO events
        (id, church_id, title, tagline, summary, starts_at, ends_at,
         registration_deadline, location, cover_color, banner_url, schedule,
-        status, creator_email, requires_login)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15)
+        status, creator_email, requires_login, custom_questions)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb)
      ON CONFLICT (id) DO UPDATE SET
        church_id             = EXCLUDED.church_id,
        title                 = EXCLUDED.title,
@@ -205,6 +207,7 @@ async function upsertEvent(ev) {
        schedule              = EXCLUDED.schedule,
        status                = EXCLUDED.status,
        requires_login        = EXCLUDED.requires_login,
+       custom_questions      = EXCLUDED.custom_questions,
        -- creator_email is set once on insert; later edits don't reassign it
        -- so a super-admin editing the event doesn't steal ownership.
        updated_at            = NOW()
@@ -217,6 +220,9 @@ async function upsertEvent(ev) {
       ev.status || 'published',
       ev.creatorEmail || null,
       !!ev.requiresLogin,
+      ev.customQuestions && Array.isArray(ev.customQuestions) && ev.customQuestions.length
+        ? JSON.stringify(ev.customQuestions)
+        : null,
     ],
   );
   const eventId = ins.rows[0].id;
@@ -587,8 +593,9 @@ router.post('/api/events/:id/register', async (req, res) => {
                 attendee_name, attendee_email, attendee_phone, attendee_profile,
                 age_group, dietary, emergency_name, emergency_phone,
                 role, referrer, status, ticket_url,
-                registered_by_user_id, registered_by_email)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+                registered_by_user_id, registered_by_email,
+                custom_answers)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23::jsonb)
              RETURNING *`,
             [
               code, eventId, ticketTypeId, accommodationId,
@@ -625,6 +632,14 @@ router.post('/api/events/:id/register', async (req, res) => {
               ticketUrlOrigin ? `${ticketUrlOrigin}/tickets/${code}` : `/tickets/${code}`,
               actor?.id || null,
               actor?.email ? actor.email.toLowerCase() : null,
+              // customAnswers is the registrant's responses to event.custom_questions.
+              // Shared by every attendee in the batch (same submission), or per-
+              // attendee if the frontend chose to vary it (e.g. plus-one details).
+              (a.customAnswers && typeof a.customAnswers === 'object')
+                ? JSON.stringify(a.customAnswers)
+                : (req.body?.customAnswers && typeof req.body.customAnswers === 'object'
+                    ? JSON.stringify(req.body.customAnswers)
+                    : null),
             ],
           );
           tickets.push(row.rows[0]);
