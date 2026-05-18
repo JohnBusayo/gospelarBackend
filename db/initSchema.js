@@ -1056,6 +1056,25 @@ const initDb = async () => {
     // answers in custom_answers as { question_id: answer_value }.
     `ALTER TABLE events         ADD COLUMN IF NOT EXISTS custom_questions JSONB`,
     `ALTER TABLE event_tickets  ADD COLUMN IF NOT EXISTS custom_answers   JSONB`,
+
+    // Multi-device sessions. Replaces the single users.session_token column
+    // (still present, no longer written) so a user can stay signed in on
+    // phone + laptop + tablet simultaneously. Each login mints a new row;
+    // sign-out deletes the row for that specific token. userAuth middleware
+    // resolves the bearer token by JOINing this table → users.
+    //
+    // device_label and provider are advisory only — useful for a future
+    // "active sessions" admin screen. last_used_at is bumped lazily on each
+    // authenticated call so an idle-expiry job can later prune stale rows.
+    `CREATE TABLE IF NOT EXISTS user_sessions (
+       token         TEXT         PRIMARY KEY,
+       user_id       INT          NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+       provider      TEXT,
+       device_label  TEXT,
+       created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+       last_used_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, last_used_at DESC)`,
   ];
 
   for (const sql of steps) {

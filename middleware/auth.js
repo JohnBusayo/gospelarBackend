@@ -143,18 +143,29 @@ const userAuth = async (req, res, next) => {
   const bearer = hdr.startsWith('Bearer ') ? hdr.slice(7).trim() : '';
   if (!bearer) return res.status(401).json({ error: 'Missing Bearer token.' });
   try {
+    // Multi-device sessions: resolve the bearer token against user_sessions,
+    // not users.session_token. A single user can have many rows, one per
+    // signed-in device, so logging in on one device no longer evicts the
+    // others. last_used_at is bumped lazily so future pruning can spot
+    // idle sessions.
     const r = await db.query(
-      `SELECT id, email, full_name, role, session_token, session_at
-         FROM users WHERE session_token = $1`,
+      `SELECT u.id, u.email, u.full_name, u.role
+         FROM user_sessions s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.token = $1`,
       [bearer],
     );
     if (!r.rows.length) return res.status(401).json({ error: 'Invalid session.' });
     const u = r.rows[0];
+    // Fire-and-forget heartbeat — failure here shouldn't reject the request.
+    db.query('UPDATE user_sessions SET last_used_at = NOW() WHERE token = $1', [bearer])
+      .catch((e) => console.warn('user_sessions heartbeat:', e.message));
     req.user = {
       id: u.id,
       email: u.email,
       full_name: u.full_name || '',
       role: await effectiveRole(u.email, u.role),
+      sessionToken: bearer,
     };
     next();
   } catch (e) {

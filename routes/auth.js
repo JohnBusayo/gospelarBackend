@@ -78,11 +78,11 @@ router.post('/api/auth/register', async (req, res) => {
 });
 
 router.post('/api/auth/login', async (req, res) => {
-  const { email, password, force = false } = req.body;
+  const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required.' });
   try {
     const r = await db.query(
-      `SELECT id,email,password_hash,full_name,role,session_token,session_at,
+      `SELECT id,email,password_hash,full_name,role,
               COALESCE(approval_status,'approved') AS approval_status,
               rejected_reason
          FROM users WHERE email=$1`,
@@ -103,21 +103,17 @@ router.post('/api/auth/login', async (req, res) => {
             : 'Your teacher account application was declined. Contact your church admin.');
       return res.status(403).json({ error: status, message });
     }
-    // Single-session: refuse if another device has signed in within 30 days,
-    // unless caller explicitly says force=true (will evict the other device).
-    if (user.session_token && user.session_at) {
-      const ageDays = (Date.now() - new Date(user.session_at).getTime()) / 86400000;
-      if (ageDays < 30 && !force) {
-        return res.status(409).json({
-          error: 'already_logged_in',
-          message: 'This account is already logged in on another device. Do you want to log that device out?',
-        });
-      }
-    }
+    // Multi-device sessions: mint a fresh token and INSERT into user_sessions
+    // (no longer overwrites a single users.session_token column). Phone +
+    // laptop + tablet can all stay signed in at the same time.
     const token = Buffer.from(`${user.email}:${Date.now()}:${Math.random()}`).toString('base64');
-    await db.query('UPDATE users SET session_token=$1, session_at=NOW() WHERE email=$2', [token, user.email]);
+    await db.query(
+      `INSERT INTO user_sessions (token, user_id, provider, device_label)
+       VALUES ($1, $2, 'password', $3)`,
+      [token, user.id, deviceLabelFromRequest(req)],
+    );
     const prof = await db.query('SELECT * FROM user_profiles WHERE email=$1', [user.email]);
-    console.log('[Auth] Login: %s (force=%s)', user.email, force);
+    console.log('[Auth] Login: %s', user.email);
     res.json({
       message: 'Login successful!',
       user: {
@@ -135,13 +131,31 @@ router.post('/api/auth/validate-session', async (req, res) => {
   const { email, token } = req.body;
   if (!email || !token) return res.status(400).json({ valid: false, reason: 'missing' });
   try {
-    const r = await db.query('SELECT session_token FROM users WHERE LOWER(email)=LOWER($1)', [email]);
-    if (!r.rows.length) return res.json({ valid: false, reason: 'user_not_found' });
-    const stored = r.rows[0].session_token;
-    if (!stored) return res.json({ valid: false, reason: 'no_token' });
-    const valid = stored === token;
-    res.json({ valid, reason: valid ? null : 'session_replaced' });
+    const r = await db.query(
+      `SELECT 1
+         FROM user_sessions s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.token = $1 AND LOWER(u.email) = LOWER($2)`,
+      [token, email],
+    );
+    res.json({ valid: r.rows.length > 0, reason: r.rows.length ? null : 'session_not_found' });
   } catch (e) { res.status(500).json({ valid: false, reason: 'error' }); }
+});
+
+// Sign-out — deletes the bearer token from user_sessions so other devices
+// stay signed in. Tolerates missing/invalid token (returns ok anyway) since
+// the client-side state has already been cleared by the time this fires.
+router.post('/api/auth/signout', async (req, res) => {
+  const hdr = String(req.headers.authorization || '');
+  const token = hdr.startsWith('Bearer ') ? hdr.slice(7).trim() : '';
+  if (!token) return res.json({ ok: true });
+  try {
+    await db.query('DELETE FROM user_sessions WHERE token = $1', [token]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('signout:', e.message);
+    res.status(500).json({ ok: false, error: 'Sign-out failed.' });
+  }
 });
 
 router.post('/api/auth/change-password', async (req, res) => {
@@ -180,14 +194,16 @@ router.delete('/api/auth/account', async (req, res) => {
 
 // Shared session minter — used by both Google and magic-link paths so the
 // frontend always gets the same shape back as /api/auth/login. Issues a
-// random session_token, persists it on `users.session_token`, and returns
-// the user + token tuple. `provider` is just for logging today, but a future
-// users.auth_provider column can read it without changing this signature.
-async function issueSession(user, provider) {
+// random token, inserts a new row in user_sessions, and returns the
+// user + token tuple. Multi-device: every login adds a row rather than
+// overwriting an old one, so phone + laptop + tablet stay signed in
+// independently.
+async function issueSession(user, provider, req) {
   const token = Buffer.from(`${user.email}:${Date.now()}:${Math.random()}`).toString('base64');
   await db.query(
-    'UPDATE users SET session_token=$1, session_at=NOW() WHERE email=$2',
-    [token, user.email],
+    `INSERT INTO user_sessions (token, user_id, provider, device_label)
+     VALUES ($1, $2, $3, $4)`,
+    [token, user.id, provider, deviceLabelFromRequest(req)],
   );
   const prof = await db.query('SELECT * FROM user_profiles WHERE email=$1', [user.email]);
   console.log('[Auth] Passwordless login: %s (provider=%s)', user.email, provider);
@@ -201,6 +217,31 @@ async function issueSession(user, provider) {
     profile: prof.rows[0] || null,
     token,
   };
+}
+
+// Best-effort human label for the signing-in device. Stored on the
+// user_sessions row so a future "active devices" admin screen can show
+// readable entries like "Chrome on Windows" or "Safari on iPhone". Falls
+// back to a User-Agent slice when nothing recognizable matches.
+function deviceLabelFromRequest(req) {
+  const ua = String(req?.headers?.['user-agent'] || '').trim();
+  if (!ua) return null;
+  const browser =
+    /Edg\//.test(ua)         ? 'Edge'    :
+    /Chrome\//.test(ua)      ? 'Chrome'  :
+    /Firefox\//.test(ua)     ? 'Firefox' :
+    /Safari\//.test(ua)      ? 'Safari'  :
+                               null;
+  const platform =
+    /iPhone|iPad|iPod/.test(ua) ? 'iPhone'  :
+    /Android/.test(ua)          ? 'Android' :
+    /Windows/.test(ua)          ? 'Windows' :
+    /Mac OS X|Macintosh/.test(ua) ? 'Mac'   :
+    /Linux/.test(ua)            ? 'Linux'   :
+                                  null;
+  if (browser && platform) return `${browser} on ${platform}`;
+  if (browser || platform)  return browser || platform;
+  return ua.slice(0, 80);
 }
 
 // Upsert a user by email — used when neither Google nor magic-link callers
@@ -280,7 +321,7 @@ router.post('/api/auth/google', async (req, res) => {
       email: claims.email,
       full_name: claims.name || [claims.given_name, claims.family_name].filter(Boolean).join(' ') || null,
     });
-    const out = await issueSession(user, 'google');
+    const out = await issueSession(user, 'google', req);
     res.json({ message: 'Signed in with Google.', ...out });
   } catch (e) {
     console.error('google upsert:', e.message);
@@ -350,7 +391,7 @@ router.get('/api/auth/magic-link/verify', async (req, res) => {
   }
   try {
     const user = await upsertPasswordlessUser({ email: v.payload.email });
-    const out = await issueSession(user, 'magic-link');
+    const out = await issueSession(user, 'magic-link', req);
     res.json({ message: 'Signed in.', redirect: v.payload.redirect || '/dashboard', ...out });
   } catch (e) {
     console.error('magic-link verify:', e.message);
