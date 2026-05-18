@@ -22,6 +22,7 @@ const db = require('../db');
 const { adminAuth, userAuth } = require('../middleware/auth');
 const { isValidEmail } = require('../utils/helpers');
 const { sendNow } = require('../services/notifications');
+const { verify: verifyPaymentToken } = require('../services/eventPaymentToken');
 
 const router = express.Router();
 
@@ -510,6 +511,43 @@ router.post('/api/events/:id/register', async (req, res) => {
     if (ttRow.capacity > 0 && attendees.length > ttLeft) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: `Only ${ttLeft} of that ticket left.` });
+    }
+
+    // Paid-ticket gate — when the ticket type carries a price the caller
+    // must present a paymentProofToken minted by /api/events/payments/verify
+    // covering this exact (eventId, ticketTypeId, quantity). The token is
+    // HMAC-signed by the same backend, so a forged or stolen token is
+    // detectable. Free tiers bypass entirely so unpriced events stay simple.
+    if ((ttRow.price_cents || 0) > 0) {
+      const proofToken = String(req.body?.paymentProofToken || '').trim();
+      if (!proofToken) {
+        await client.query('ROLLBACK');
+        return res.status(402).json({
+          error: 'payment_required',
+          message: 'This ticket type requires payment. Pay first, then submit the registration with the paymentProofToken.',
+        });
+      }
+      const check = verifyPaymentToken(proofToken);
+      if (!check.ok) {
+        await client.query('ROLLBACK');
+        return res.status(402).json({
+          error: `payment_proof_${check.error}`,
+          message: `Payment proof token ${check.error}. Re-verify the payment.`,
+        });
+      }
+      const proof = check.payload;
+      if (
+        proof.kind !== 'event_payment_proof'
+        || proof.eventId !== eventId
+        || proof.ticketTypeId !== ticketTypeId
+        || proof.quantity !== attendees.length
+      ) {
+        await client.query('ROLLBACK');
+        return res.status(402).json({
+          error: 'payment_proof_mismatch',
+          message: 'Payment proof does not cover this exact ticket / quantity.',
+        });
+      }
     }
 
     let accRow = null;

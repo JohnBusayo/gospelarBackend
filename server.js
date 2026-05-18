@@ -47,6 +47,7 @@ app.use(require('./routes/notifications'));
 app.use(require('./routes/gospelerIds'));
 app.use(require('./routes/membership'));
 app.use(require('./routes/events'));
+app.use(require('./routes/eventPayments'));
 
 const social = require('./routes/social');
 app.use(social);
