@@ -1057,6 +1057,13 @@ const initDb = async () => {
     `ALTER TABLE events         ADD COLUMN IF NOT EXISTS custom_questions JSONB`,
     `ALTER TABLE event_tickets  ADD COLUMN IF NOT EXISTS custom_answers   JSONB`,
 
+    // Which template the event was originally spun up from (e.g. 'wedding',
+    // 'church-retreat'). Null for events created without a template. Used
+    // by the Registrations page to filter rows by "event type" — admins
+    // can ask "how many people registered for any wedding I've hosted?"
+    `ALTER TABLE events         ADD COLUMN IF NOT EXISTS template_id      TEXT`,
+    `CREATE INDEX IF NOT EXISTS idx_events_template ON events(template_id) WHERE template_id IS NOT NULL`,
+
     // Multi-device sessions. Replaces the single users.session_token column
     // (still present, no longer written) so a user can stay signed in on
     // phone + laptop + tablet simultaneously. Each login mints a new row;

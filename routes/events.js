@@ -49,6 +49,7 @@ function eventRow(row, types = [], accommodation = []) {
     creatorEmail:          row.creator_email || null,
     requiresLogin:         !!row.requires_login,
     customQuestions:       row.custom_questions || null,
+    templateId:            row.template_id || null,
     ticketTypes:           types,
     accommodation:         accommodation,
     createdAt:             row.created_at,
@@ -191,8 +192,8 @@ async function upsertEvent(ev) {
     `INSERT INTO events
        (id, church_id, title, tagline, summary, starts_at, ends_at,
         registration_deadline, location, cover_color, banner_url, schedule,
-        status, creator_email, requires_login, custom_questions)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb)
+        status, creator_email, requires_login, custom_questions, template_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb,$17)
      ON CONFLICT (id) DO UPDATE SET
        church_id             = EXCLUDED.church_id,
        title                 = EXCLUDED.title,
@@ -208,8 +209,10 @@ async function upsertEvent(ev) {
        status                = EXCLUDED.status,
        requires_login        = EXCLUDED.requires_login,
        custom_questions      = EXCLUDED.custom_questions,
-       -- creator_email is set once on insert; later edits don't reassign it
-       -- so a super-admin editing the event doesn't steal ownership.
+       template_id           = COALESCE(events.template_id, EXCLUDED.template_id),
+       -- template_id is sticky once set (an event's "type" shouldn't change
+       -- mid-life), and creator_email is set once on insert; later edits
+       -- don't reassign either so a super-admin editing doesn't relabel.
        updated_at            = NOW()
      RETURNING *`,
     [
@@ -223,6 +226,7 @@ async function upsertEvent(ev) {
       ev.customQuestions && Array.isArray(ev.customQuestions) && ev.customQuestions.length
         ? JSON.stringify(ev.customQuestions)
         : null,
+      ev.templateId || null,
     ],
   );
   const eventId = ins.rows[0].id;
