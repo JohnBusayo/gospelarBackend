@@ -322,18 +322,30 @@ router.post('/api/admin/events', adminAuth, async (req, res) => {
 // rejects payloads that try to override it. The frontend slugifies a title
 // into an id, which we use as the primary key (matches the localStorage
 // shim and existing admin form).
+//
+// Slug collisions used to 409 and force the user to pick a different
+// title. We now auto-suffix instead — "youth-camp" → "youth-camp-2",
+// "-3", … — so two events with the same title from different creators
+// both succeed and each gets a unique share link.
 router.post('/api/events', userAuth, async (req, res) => {
   const ev = req.body || {};
   if (!ev.id || !ev.title) return res.status(400).json({ error: 'id and title are required.' });
 
-  // Forbid duplicate slugs across creators — first-come wins, the second
-  // user is told to pick a different title.
   try {
-    const dup = await db.query(`SELECT creator_email FROM events WHERE id = $1`, [ev.id]);
-    if (dup.rows.length) {
-      return res.status(409).json({ error: 'An event with that id/slug already exists. Try a different title.' });
+    const baseId = String(ev.id).trim();
+    let id = baseId;
+    // Find the first free variant. Cap at 100 attempts so a runaway
+    // collision storm can't loop forever; 100 events sharing one base
+    // slug is well past anything a real user would type.
+    for (let i = 2; i <= 100; i++) {
+      const dup = await db.query(`SELECT 1 FROM events WHERE id = $1`, [id]);
+      if (!dup.rows.length) break;
+      id = `${baseId}-${i}`;
+      if (i === 100) {
+        return res.status(409).json({ error: 'Too many events share that title. Try a different one.' });
+      }
     }
-    const saved = await upsertEvent({ ...ev, creatorEmail: req.user.email });
+    const saved = await upsertEvent({ ...ev, id, creatorEmail: req.user.email });
     res.json(saved);
   } catch (e) {
     console.error('POST /api/events:', e.code, e.message);
