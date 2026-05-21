@@ -11,6 +11,7 @@
 //   GET    /api/tickets?email=…              — tickets by attendee email
 //   GET    /api/tickets/:code                — single ticket
 //   PUT    /api/tickets/:code                — patch editable attendee fields
+//   DELETE /api/tickets/:code                — attendee / registrant / event creator / admin
 //   POST   /api/checkin/:code                — mark checked-in (idempotent)
 //
 // Persistence lives in events / event_ticket_types / event_accommodation /
@@ -849,6 +850,41 @@ router.get('/api/events/:id/tickets', async (req, res) => {
 // Editable: name, email, phone, dietary, emergency contact, age group.
 // Everything else (status, code, group, capacity-affecting fields) stays
 // admin-only or system-managed.
+// Delete a ticket. Allowed for: the attendee themselves, the person who
+// registered them, the event's creator, or a super-admin. Anyone else gets
+// 403 — the unguessable code alone is not enough authority to delete.
+router.delete('/api/tickets/:code', userAuth, async (req, res) => {
+  const code = String(req.params.code || '').trim().toUpperCase();
+  const callerEmail = String(req.user.email || '').toLowerCase();
+  const isAdmin = req.user.role === 'admin';
+  try {
+    const r = await db.query(
+      `SELECT t.code, t.event_id, LOWER(t.attendee_email) AS att,
+              LOWER(t.registered_by_email) AS reg, t.registered_by_user_id AS reg_uid,
+              LOWER(e.creator_email) AS creator
+         FROM event_tickets t
+         LEFT JOIN events e ON e.id = t.event_id
+        WHERE t.code = $1`,
+      [code],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Ticket not found.' });
+    const t = r.rows[0];
+    const owns = isAdmin
+      || t.att === callerEmail
+      || t.reg === callerEmail
+      || (t.reg_uid && t.reg_uid === req.user.id)
+      || t.creator === callerEmail;
+    if (!owns) {
+      return res.status(403).json({ error: 'Only the attendee, the person who registered them, or the event creator can delete this ticket.' });
+    }
+    const del = await db.query(`DELETE FROM event_tickets WHERE code = $1`, [code]);
+    res.json({ ok: del.rowCount > 0 });
+  } catch (e) {
+    console.error('DELETE /api/tickets/:code:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to delete ticket.' });
+  }
+});
+
 router.put('/api/tickets/:code', async (req, res) => {
   const code = String(req.params.code || '').trim().toUpperCase();
   const patch = req.body || {};
