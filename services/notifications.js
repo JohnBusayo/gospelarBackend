@@ -205,6 +205,234 @@ function ticketTagHtml(p) {
   `;
 }
 
+// Builds the body for the ticket.confirmation email. Renders two distinct
+// surfaces inspired by physical event collateral:
+//
+//   1. Horizontal TICKET — main panel on the left (event title + date /
+//      time pills + venue + role chip + attendee + ticket code) and a
+//      perforated stub on the right (event recap + barcode-style code).
+//      Built with nested tables + linear-gradient backgrounds + a
+//      `border-left: 2px dashed` "perforation" line so it renders in
+//      Gmail, Outlook, Apple Mail without needing SVG / clip-path.
+//
+//   2. Portrait BADGE — lanyard clip on top, brand mark, photo, attendee
+//      name, role chip, contact lines, QR at the bottom. Same data the
+//      printable badge PDF carries (attendees can flash either at the
+//      door). Bg uses the brand navy gradient; QR is a real <img>.
+//
+// All measurements are inline so email clients without head-style support
+// (Outlook desktop, Gmail's classic renderer) still get the layout. We
+// keep the visual brand palette (navy + amber) rather than the orange /
+// purple of the reference images — same shape, our colours.
+function ticketAndBadgeBodyHtml(p, firstName) {
+  const role     = roleColours(p.role);
+  const gradient = `linear-gradient(135deg, ${role.from} 0%, ${role.to} 100%)`;
+  const qrUrl    = ticketQrSrc(p);
+  const whenLine = fmtWhen(p.eventStartsAt);
+  const photoSrc = p.attendeePhoto
+    ? (String(p.attendeePhoto).startsWith('data:')
+        ? p.attendeePhoto
+        : `data:image/jpeg;base64,${p.attendeePhoto}`)
+    : null;
+  const initials = String(p.attendeeName || '?')
+    .split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((w) => (w[0] || '').toUpperCase()).join('') || '?';
+
+  // Date + time pills are rendered separately so the ticket main panel
+  // can show them side-by-side like the reference image's "20 MAY 2025"
+  // / "09:00 - 17:00" chips.
+  const dateText = p.eventStartsAt
+    ? new Date(p.eventStartsAt).toLocaleDateString('en-NG', { day: '2-digit', month: 'short', year: 'numeric' })
+    : null;
+  const timeText = p.eventStartsAt
+    ? new Date(p.eventStartsAt).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' })
+    : null;
+
+  // ── TICKET (horizontal) ─────────────────────────────────────────────
+  // outer wrapper carries the rounded corners and shadow ring; the inner
+  // two cells are the main panel + stub.
+  const ticketHtml = `
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;margin:0 0 20px;border-radius:14px;overflow:hidden;background:#0b3a8a;box-shadow:0 12px 32px -16px rgba(8,16,80,0.4)">
+      <tr>
+        <!-- MAIN PANEL — gradient background, photo + event info -->
+        <td valign="top" style="padding:22px 24px;color:#FFFFFF;background:linear-gradient(135deg,#0b3a8a 0%,#1656c2 60%,#1e40af 100%);width:70%">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">
+            <tr>
+              <td valign="top" width="84" style="padding-right:14px">
+                ${photoSrc
+                  ? `<img src="${photoSrc}" alt="" width="72" height="72" style="display:block;width:72px;height:72px;border-radius:12px;object-fit:cover;border:2px solid rgba(255,255,255,0.4)" />`
+                  : `<div style="width:72px;height:72px;border-radius:12px;background:rgba(255,255,255,0.18);color:#FFFFFF;font-weight:900;font-size:22px;line-height:72px;text-align:center;letter-spacing:0.5px;border:2px solid rgba(255,255,255,0.3)">${esc(initials)}</div>`}
+              </td>
+              <td valign="top">
+                <div style="font-size:10px;font-weight:800;letter-spacing:0.22em;text-transform:uppercase;color:#FBBF24">
+                  Your ticket
+                </div>
+                <div style="margin-top:6px;font-size:20px;font-weight:900;letter-spacing:-0.3px;line-height:1.2;color:#FFFFFF">
+                  ${esc(p.eventTitle || 'Event')}
+                </div>
+                <div style="margin-top:6px;font-size:13px;color:rgba(255,255,255,0.85);line-height:1.5">
+                  ${esc(p.attendeeName || 'Attendee')}
+                </div>
+              </td>
+            </tr>
+          </table>
+
+          <!-- Date / time pills -->
+          ${dateText || timeText ? `
+          <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:18px">
+            <tr>
+              ${dateText ? `
+              <td style="padding-right:8px">
+                <div style="display:inline-block;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,0.14);font-size:12px;font-weight:700;color:#FFFFFF;letter-spacing:0.04em">
+                  📅 &nbsp;${esc(dateText.toUpperCase())}
+                </div>
+              </td>` : ''}
+              ${timeText ? `
+              <td>
+                <div style="display:inline-block;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,0.14);font-size:12px;font-weight:700;color:#FFFFFF;letter-spacing:0.04em">
+                  🕘 &nbsp;${esc(timeText)}
+                </div>
+              </td>` : ''}
+            </tr>
+          </table>` : ''}
+
+          <!-- Venue + role chip row -->
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-top:14px">
+            <tr>
+              <td valign="middle">
+                ${p.eventLocation ? `<div style="font-size:12.5px;color:rgba(255,255,255,0.88)">📍 ${esc(p.eventLocation)}</div>` : '<div>&nbsp;</div>'}
+                ${p.seatLabel ? `<div style="margin-top:4px;font-size:12.5px;color:rgba(255,255,255,0.88)">💺 Seat <strong style="color:#FFFFFF">${esc(p.seatLabel)}</strong></div>` : ''}
+              </td>
+              <td valign="middle" align="right" style="white-space:nowrap">
+                <span style="display:inline-block;padding:6px 12px;border-radius:999px;background:${gradient};color:#FFFFFF;font-size:10px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase">
+                  ${esc(role.label)}
+                </span>
+              </td>
+            </tr>
+          </table>
+
+          <!-- Code at the very bottom -->
+          <div style="margin-top:18px;padding-top:14px;border-top:1px dashed rgba(255,255,255,0.30);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;letter-spacing:2px;color:rgba(255,255,255,0.95);font-weight:700">
+            ${esc(p.ticketCode || '')}
+          </div>
+        </td>
+
+        <!-- STUB — vertical scan zone with mini event recap + barcode -->
+        <td valign="top" style="width:165px;padding:22px 18px;color:#FFFFFF;background:#08246a;border-left:2px dashed rgba(255,255,255,0.35)">
+          <div style="font-size:9px;font-weight:800;letter-spacing:0.22em;text-transform:uppercase;color:#FBBF24;margin-bottom:8px">
+            Admit one
+          </div>
+          <div style="font-size:13px;font-weight:800;line-height:1.25;color:#FFFFFF;margin-bottom:14px">
+            ${esc(p.eventTitle || 'Event')}
+          </div>
+          ${dateText ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:4px">📅 ${esc(dateText)}</div>` : ''}
+          ${timeText ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:4px">🕘 ${esc(timeText)}</div>` : ''}
+          ${p.eventLocation ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:4px">📍 ${esc(String(p.eventLocation).slice(0, 28))}</div>` : ''}
+          ${p.seatLabel ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:4px">💺 ${esc(p.seatLabel)}</div>` : ''}
+          ${p.ticketTypeName ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:4px">🎟 ${esc(p.ticketTypeName)}</div>` : ''}
+
+          <!-- Faux barcode strip — set of varied-width vertical bars -->
+          <div style="margin-top:18px;padding:8px;background:#FFFFFF;border-radius:6px;text-align:center">
+            <div style="font-family:'Libre Barcode 128',monospace;font-size:36px;color:#0F172A;letter-spacing:1px;line-height:1">
+              ${esc(p.ticketCode || '')}
+            </div>
+            <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:9px;color:#475569;letter-spacing:1.5px;margin-top:2px">
+              ${esc(p.ticketCode || '')}
+            </div>
+          </div>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  // ── BADGE (portrait, lanyard clip on top) ───────────────────────────
+  const badgeHtml = `
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin:0 0 22px">
+      <tr>
+        <td align="center">
+          <!-- Lanyard clip placeholder — small dark trapezoid sitting above
+               the badge card so the email reads as a hanging ID. -->
+          <div style="width:42px;height:14px;background:#0F172A;border-radius:6px 6px 2px 2px;margin:0 auto"></div>
+          <div style="width:14px;height:10px;background:#FFFFFF;border:2px solid #0F172A;border-radius:6px;margin:-2px auto 0;position:relative"></div>
+
+          <!-- Badge card -->
+          <table role="presentation" cellpadding="0" cellspacing="0" width="320" style="max-width:320px;border-collapse:separate;border-spacing:0;background:linear-gradient(170deg,#1656c2 0%,#0b3a8a 60%,#08163d 100%);color:#FFFFFF;border-radius:14px;overflow:hidden;margin-top:6px;box-shadow:0 16px 36px -18px rgba(8,16,80,0.5)">
+            <tr>
+              <td style="padding:20px 20px 0">
+                <div align="center">
+                  ${photoSrc
+                    ? `<img src="${photoSrc}" alt="" width="120" height="120" style="display:block;width:120px;height:120px;border-radius:14px;object-fit:cover;border:3px solid rgba(255,255,255,0.6)" />`
+                    : `<div style="width:120px;height:120px;border-radius:14px;background:${gradient};color:#FFFFFF;font-weight:900;font-size:42px;line-height:120px;text-align:center;border:3px solid rgba(255,255,255,0.4);margin:0 auto">${esc(initials)}</div>`}
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:14px 20px 0;text-align:center">
+                <div style="font-size:9px;font-weight:800;letter-spacing:0.22em;text-transform:uppercase;color:#FBBF24">
+                  ${esc(p.eventTitle || 'Event')}
+                </div>
+                <div style="margin-top:6px;font-size:22px;font-weight:900;letter-spacing:-0.3px;color:#FFFFFF;line-height:1.15">
+                  ${esc(p.attendeeName || 'Attendee')}
+                </div>
+                <div style="margin-top:8px">
+                  <span style="display:inline-block;padding:5px 12px;border-radius:999px;background:${gradient};color:#FFFFFF;font-size:10px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase">
+                    ${esc(role.label)}
+                  </span>
+                </div>
+                ${p.attendeeEmail ? `<div style="margin-top:14px;font-size:11.5px;color:rgba(255,255,255,0.85)">✉ ${esc(p.attendeeEmail)}</div>` : ''}
+                ${p.attendeePhone ? `<div style="margin-top:3px;font-size:11.5px;color:rgba(255,255,255,0.85)">☎ ${esc(p.attendeePhone)}</div>` : ''}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 20px 20px">
+                <!-- QR + code chip — white panel so the QR contrasts with
+                     the navy badge body. -->
+                <div align="center">
+                  <div style="display:inline-block;padding:10px;background:#FFFFFF;border-radius:10px">
+                    <img src="${qrUrl}" alt="QR code for ${esc(p.ticketCode)}" width="120" height="120" style="display:block;width:120px;height:120px" />
+                  </div>
+                </div>
+                <div align="center" style="margin-top:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;letter-spacing:2px;color:#FFFFFF;font-weight:700">
+                  ${esc(p.ticketCode || '')}
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  return `
+    <p style="margin:0 0 12px;font-size:14.5px">Hi ${esc(firstName)},</p>
+    <p style="margin:0 0 22px;font-size:14.5px">
+      Thanks for registering for <strong>${esc(p.eventTitle || 'this event')}</strong>.
+      Your ticket and badge are below — show either QR code at the door, or
+      read out the code <span style="font-family:ui-monospace,Menlo,monospace;font-weight:700">${esc(p.ticketCode)}</span>.
+    </p>
+
+    <!-- Section label -->
+    <div style="font-size:10px;font-weight:800;letter-spacing:0.22em;text-transform:uppercase;color:#64748B;margin:0 0 10px">
+      Ticket
+    </div>
+    ${ticketHtml}
+
+    <div style="font-size:10px;font-weight:800;letter-spacing:0.22em;text-transform:uppercase;color:#64748B;margin:20px 0 14px">
+      Badge
+    </div>
+    ${badgeHtml}
+
+    ${downloadButtonsHtml(downloadUrls(p))}
+
+    <p style="margin:18px 0 10px;font-size:14px;color:#334155">
+      Need to make changes? Reply to this email and we'll help.
+    </p>
+    <p style="margin:0;font-size:14px;color:#334155">
+      Grace and peace,<br/><strong>The Gospelar team</strong>
+    </p>
+  `;
+}
+
 const TEMPLATES = {
   // Event registration confirmation — fires once per attendee right after
   // a successful POST /register. The email is the ticket: it includes a
@@ -215,66 +443,7 @@ const TEMPLATES = {
   //   roomLabel?, seatLabel?, groupName? }
   'ticket.confirmation': (p) => {
     const firstName = String(p.attendeeName || '').trim().split(/\s+/)[0] || 'there';
-    const qrUrl     = ticketQrSrc(p);
-    const whenLine  = fmtWhen(p.eventStartsAt);
-    const rowsHtml  = [
-      detailRow('Event', esc(p.eventTitle || '—')),
-      detailRow('When',  whenLine ? esc(whenLine) : null),
-      detailRow('Where', p.eventLocation ? esc(p.eventLocation) : null),
-      detailRow('Ticket', p.ticketTypeName ? esc(p.ticketTypeName) : null),
-      detailRow('Room',  p.accommodationName ? esc(p.accommodationName) : null),
-      detailRow('Assigned', p.roomLabel ? esc(p.roomLabel) : null),
-      detailRow('Seat',  p.seatLabel ? `<strong style="font-weight:700">${esc(p.seatLabel)}</strong>` : null),
-      detailRow('Group', p.groupName ? esc(p.groupName) : null),
-      detailRow('Code',  `<span style="font-family:ui-monospace,Menlo,monospace;font-weight:700">${esc(p.ticketCode)}</span>`),
-    ].join('');
-
-    // The visual ticket sits inside shellEmail's body slot. We use a single
-    // wide table so Gmail/Outlook lay out the QR + details cleanly — flex
-    // and grid both fall apart in email clients, but nested tables work.
-    const bodyHtml = `
-      <div style="border-radius:12px;overflow:hidden;background:linear-gradient(135deg,#2563EB 0%,#DB2777 100%);color:#FFFFFF;padding:22px 24px;margin:0 0 18px">
-        <div style="font-size:11px;font-weight:800;letter-spacing:0.22em;text-transform:uppercase;opacity:0.9">You're in!</div>
-        <div style="margin-top:6px;font-size:20px;font-weight:900;letter-spacing:-0.3px;line-height:1.25">${esc(p.eventTitle || 'Event')}</div>
-        ${whenLine || p.eventLocation ? `<div style="margin-top:8px;font-size:13px;opacity:0.92">${[whenLine ? esc(whenLine) : '', p.eventLocation ? esc(p.eventLocation) : ''].filter(Boolean).join(' &nbsp;·&nbsp; ')}</div>` : ''}
-      </div>
-
-      ${/* Quick-flash digital tag — the lightweight version of the ticket
-            shown at the top of the on-screen ticket page. Mirrors the React
-            TicketTag.jsx so the email and the web feel like one product. */
-        ticketTagHtml(p)}
-
-      ${/* Inline download buttons — give recipients on email clients that
-            collapse attachments (Outlook web, some Gmail mobile widgets) a
-            visible path to grab the ticket / badge / form without coming
-            back to the website. Same files as the attachments below. */
-        downloadButtonsHtml(downloadUrls(p))}
-
-      <p style="margin:0 0 12px;font-size:14.5px">Hi ${esc(firstName)},</p>
-      <p style="margin:0 0 18px;font-size:14.5px">
-        Thanks for registering for <strong>${esc(p.eventTitle || 'this event')}</strong>.
-        Your ticket is below — show this QR code at check-in, or read out the code
-        <span style="font-family:ui-monospace,Menlo,monospace;font-weight:700">${esc(p.ticketCode)}</span>.
-      </p>
-
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin:0 0 22px">
-        <tr>
-          <td valign="top" style="padding:0 16px 0 0;width:200px">
-            <img src="${qrUrl}" alt="QR code for ticket ${esc(p.ticketCode)}" width="180" height="180" style="display:block;width:180px;height:180px;border:1px solid #E2E8F0;border-radius:12px;background:#FFFFFF" />
-          </td>
-          <td valign="top">
-            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">${rowsHtml}</table>
-          </td>
-        </tr>
-      </table>
-
-      <p style="margin:0 0 10px;font-size:14px;color:#334155">
-        Need to make changes? Reply to this email and we'll help.
-      </p>
-      <p style="margin:0;font-size:14px;color:#334155">
-        Grace and peace,<br/><strong>The Gospelar team</strong>
-      </p>
-    `;
+    const bodyHtml = ticketAndBadgeBodyHtml(p, firstName);
 
     return {
       subject: `You're registered — ${p.eventTitle || 'event'}`,
