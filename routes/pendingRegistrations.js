@@ -353,9 +353,10 @@ router.post('/api/admin/pending-registrations/:id/approve', userAuth, async (req
     await client.query('BEGIN');
 
     // Lock the pending row + join event to do the ownership check in one shot.
+    // template_id pulled too so the confirmation email picks the right theme.
     const pr = await client.query(
       `SELECT p.*, e.creator_email, e.title AS event_title, e.starts_at AS event_starts_at,
-              e.location AS event_location
+              e.location AS event_location, e.template_id AS event_template_id
          FROM pending_registrations p
          JOIN events e ON e.id = p.event_id
         WHERE p.id = $1
@@ -528,6 +529,8 @@ router.post('/api/admin/pending-registrations/:id/approve', userAuth, async (req
           seatLabel:         t.seat_label,
           groupName:         t.group_name,
           groupType:         t.group_type,
+          templateId:        p.event_template_id,
+          priceCents:        ttRow.price_cents || 0,
         },
         dedupeKey: `ticket:${t.code}:email:confirmation:${to}`,
         metadata:  { ticketCode: t.code, eventId: p.event_id, source: 'pending-approve' },

@@ -729,6 +729,11 @@ router.post('/api/events/:id/register', async (req, res) => {
     // that route (`ticket:<code>:email:confirmation:<recipient>`), so the
     // attendee gets exactly one copy. Fire-and-forget — failures are
     // logged to notification_log and don't block the response.
+    // Pulled once outside the loop so every email in the batch reads the
+    // same template + price (and so the email theme matches the event).
+    const eventTemplateId = ev.rows[0].template_id || null;
+    const ticketPriceCents = ttRow.price_cents || 0;
+
     Promise.all(decorated.map((t) => {
       const to = (t.attendeeEmail || '').toLowerCase();
       if (!to) return null;
@@ -754,6 +759,8 @@ router.post('/api/events/:id/register', async (req, res) => {
           seatLabel:         t.seatLabel,
           groupName:         t.groupName,
           groupType:         t.groupType,
+          templateId:        eventTemplateId,
+          priceCents:        ticketPriceCents,
         },
         dedupeKey: `ticket:${t.code}:email:confirmation:${to}`,
         metadata:  { ticketCode: t.code, eventId: t.eventId, groupId: t.groupId || null, source: 'register-handler' },
