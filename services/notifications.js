@@ -332,6 +332,44 @@ const TEMPLATES = {
     // Truncate aggressively for SMS — Termii charges per segment.
     sms: `${BRAND}: ${(p.subject ? p.subject + ' — ' : '')}${(p.body || '').replace(/\s+/g, ' ').trim().slice(0, 200)}`,
   }),
+
+  // Bank-transfer registration rejected by the event creator. Payload:
+  //   { eventTitle, eventId, reason, amountCents?, ticketTypeId? }
+  // We include a back-link to the share-link page so the attendee can
+  // re-attempt with a fresh transfer screenshot.
+  'registration.rejected': (p) => {
+    const origin   = (process.env.PUBLIC_APP_URL || 'https://gospelar.app').replace(/\/$/, '');
+    const tryAgainUrl = p.eventId ? `${origin}/r/${encodeURIComponent(p.eventId)}` : null;
+    const amount = (p.amountCents && p.amountCents > 0)
+      ? `₦${(p.amountCents / 100).toLocaleString()}`
+      : '';
+    return {
+      subject: `Update on your registration for ${p.eventTitle || 'the event'}`,
+      html: shellEmail(
+        `Your registration for ${esc(p.eventTitle || 'the event')} couldn't be confirmed`,
+        `
+        <p style="margin:0 0 14px;font-size:14.5px">Hi there,</p>
+        <p style="margin:0 0 14px;font-size:14.5px">
+          Thanks for submitting your registration${amount ? ` for ${esc(amount)}` : ''} to
+          <strong>${esc(p.eventTitle || 'this event')}</strong>. After reviewing the
+          transfer screenshot, the organizer wasn't able to verify it.
+        </p>
+        <div style="border-left:3px solid #DB2777;background:#FFF1F2;padding:12px 16px;border-radius:0 8px 8px 0;margin:0 0 18px">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#9F1239;margin-bottom:6px">Reason from the organizer</div>
+          <div style="font-size:14px;color:#0F172A;white-space:pre-wrap">${esc(p.reason || 'No reason provided.')}</div>
+        </div>
+        <p style="margin:0 0 14px;font-size:14.5px">
+          If you've since completed (or re-attempted) the transfer, you can submit
+          a fresh registration with the new proof. Your previous one stays on
+          file with the organizer.
+        </p>
+        <p style="margin:0;font-size:14px;color:#334155">Grace and peace,<br/><strong>The Gospelar team</strong></p>
+        `,
+        tryAgainUrl, tryAgainUrl ? 'Re-submit your registration →' : null,
+      ),
+      sms: `${BRAND}: Your registration for ${p.eventTitle} couldn't be verified. Reason: ${(p.reason || '').slice(0, 120)}`,
+    };
+  },
 };
 
 function render(kind, payload) {

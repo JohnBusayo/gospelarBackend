@@ -1064,6 +1064,51 @@ const initDb = async () => {
     `ALTER TABLE events         ADD COLUMN IF NOT EXISTS template_id      TEXT`,
     `CREATE INDEX IF NOT EXISTS idx_events_template ON events(template_id) WHERE template_id IS NOT NULL`,
 
+    // Bank-transfer payment fallback. Set per event; when all four are
+    // null/blank the registration page hides the bank-transfer option and
+    // attendees must pay via Paystack / Flutterwave / Stripe.
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS bank_name                  TEXT`,
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS bank_account_number        TEXT`,
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS bank_account_name          TEXT`,
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS bank_transfer_instructions TEXT`,
+
+    // Soft-reserve counters used by the pending bank-transfer flow. While a
+    // registration is awaiting admin approval its quantity is added to
+    // `held`; on approve it moves to `sold`; on reject / expire it drops
+    // back to 0. Available capacity = capacity - sold - held.
+    `ALTER TABLE event_ticket_types  ADD COLUMN IF NOT EXISTS held INT NOT NULL DEFAULT 0`,
+    `ALTER TABLE event_accommodation ADD COLUMN IF NOT EXISTS held INT NOT NULL DEFAULT 0`,
+
+    // Pending bank-transfer registrations awaiting admin verification.
+    // Stores the full original /register payload + a screenshot data URL.
+    // On approve, the approve handler INSERTs into event_tickets exactly
+    // like the standard register flow would and records the new ticket
+    // codes in ticket_codes. On reject/expire, held counts get released.
+    `CREATE TABLE IF NOT EXISTS pending_registrations (
+       id                  SERIAL       PRIMARY KEY,
+       event_id            TEXT         NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+       ticket_type_id      TEXT         NOT NULL,
+       accommodation_id    TEXT,
+       quantity            INT          NOT NULL,
+       amount_cents        INT          NOT NULL,
+       attendees           JSONB        NOT NULL,
+       group_info          JSONB,
+       seat_labels         JSONB,
+       custom_answers      JSONB,
+       proof_image         TEXT         NOT NULL,
+       transfer_reference  TEXT,
+       registrant_email    TEXT         NOT NULL,
+       status              TEXT         NOT NULL DEFAULT 'pending',
+       rejection_reason    TEXT,
+       reviewed_at         TIMESTAMPTZ,
+       reviewed_by_email   TEXT,
+       ticket_codes        TEXT[],
+       created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+       updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_pending_event_status ON pending_registrations(event_id, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_pending_created      ON pending_registrations(created_at)`,
+
     // Multi-device sessions. Replaces the single users.session_token column
     // (still present, no longer written) so a user can stay signed in on
     // phone + laptop + tablet simultaneously. Each login mints a new row;

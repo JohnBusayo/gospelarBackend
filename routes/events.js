@@ -50,6 +50,10 @@ function eventRow(row, types = [], accommodation = []) {
     requiresLogin:         !!row.requires_login,
     customQuestions:       row.custom_questions || null,
     templateId:            row.template_id || null,
+    bankName:              row.bank_name || '',
+    bankAccountNumber:     row.bank_account_number || '',
+    bankAccountName:       row.bank_account_name || '',
+    bankTransferInstructions: row.bank_transfer_instructions || '',
     ticketTypes:           types,
     accommodation:         accommodation,
     createdAt:             row.created_at,
@@ -192,28 +196,33 @@ async function upsertEvent(ev) {
     `INSERT INTO events
        (id, church_id, title, tagline, summary, starts_at, ends_at,
         registration_deadline, location, cover_color, banner_url, schedule,
-        status, creator_email, requires_login, custom_questions, template_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb,$17)
+        status, creator_email, requires_login, custom_questions, template_id,
+        bank_name, bank_account_number, bank_account_name, bank_transfer_instructions)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21)
      ON CONFLICT (id) DO UPDATE SET
-       church_id             = EXCLUDED.church_id,
-       title                 = EXCLUDED.title,
-       tagline               = EXCLUDED.tagline,
-       summary               = EXCLUDED.summary,
-       starts_at             = EXCLUDED.starts_at,
-       ends_at               = EXCLUDED.ends_at,
-       registration_deadline = EXCLUDED.registration_deadline,
-       location              = EXCLUDED.location,
-       cover_color           = EXCLUDED.cover_color,
-       banner_url            = EXCLUDED.banner_url,
-       schedule              = EXCLUDED.schedule,
-       status                = EXCLUDED.status,
-       requires_login        = EXCLUDED.requires_login,
-       custom_questions      = EXCLUDED.custom_questions,
-       template_id           = COALESCE(events.template_id, EXCLUDED.template_id),
+       church_id                  = EXCLUDED.church_id,
+       title                      = EXCLUDED.title,
+       tagline                    = EXCLUDED.tagline,
+       summary                    = EXCLUDED.summary,
+       starts_at                  = EXCLUDED.starts_at,
+       ends_at                    = EXCLUDED.ends_at,
+       registration_deadline      = EXCLUDED.registration_deadline,
+       location                   = EXCLUDED.location,
+       cover_color                = EXCLUDED.cover_color,
+       banner_url                 = EXCLUDED.banner_url,
+       schedule                   = EXCLUDED.schedule,
+       status                     = EXCLUDED.status,
+       requires_login             = EXCLUDED.requires_login,
+       custom_questions           = EXCLUDED.custom_questions,
+       template_id                = COALESCE(events.template_id, EXCLUDED.template_id),
+       bank_name                  = EXCLUDED.bank_name,
+       bank_account_number        = EXCLUDED.bank_account_number,
+       bank_account_name          = EXCLUDED.bank_account_name,
+       bank_transfer_instructions = EXCLUDED.bank_transfer_instructions,
        -- template_id is sticky once set (an event's "type" shouldn't change
        -- mid-life), and creator_email is set once on insert; later edits
        -- don't reassign either so a super-admin editing doesn't relabel.
-       updated_at            = NOW()
+       updated_at                 = NOW()
      RETURNING *`,
     [
       ev.id, ev.churchId || null, ev.title, ev.tagline || '', ev.summary || '',
@@ -227,6 +236,10 @@ async function upsertEvent(ev) {
         ? JSON.stringify(ev.customQuestions)
         : null,
       ev.templateId || null,
+      ev.bankName || null,
+      ev.bankAccountNumber || null,
+      ev.bankAccountName || null,
+      ev.bankTransferInstructions || null,
     ],
   );
   const eventId = ins.rows[0].id;
