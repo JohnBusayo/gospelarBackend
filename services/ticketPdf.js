@@ -10,10 +10,13 @@
 //                              price chip + ticket code) and a perforated
 //                              stub on the right (event recap + QR +
 //                              barcode-style code).
-//   buildBadgePdf(payload)   → Portrait CR80-ish (3.5" × 5") lanyard badge
-//                              with clip slot at the top, themed banner,
-//                              big photo, attendee name, role chip,
-//                              contact stack, and a back-face QR panel.
+//   buildBadgePdf(payload)   → Portrait 2.5" × 4" lanyard badge, TWO PAGES
+//                              (front + back) that mirror the on-screen
+//                              /tickets/:code/badge page (frontend's
+//                              components/Badge.jsx). Front: photo + name +
+//                              role/type + seat pill + contact + small QR.
+//                              Back: brand mark + event title + logistics
+//                              + big QR + code + host.
 //   buildFormPdf(payload)    → A4 paper-style printable copy of the
 //                              attendee's full registration data (kept
 //                              from the previous version, retinted to
@@ -450,167 +453,246 @@ async function buildTicketPdf(p) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Badge — portrait lanyard card (3.5" × 5") with clip slot + back-face QR
+// Badge — portrait 2.5" × 4" lanyard card. Mirrors components/Badge.jsx
+// (the on-screen /tickets/:code/badge page): two pages, front + back, the
+// same dimensions and visual layout the printable React badge uses.
 // ─────────────────────────────────────────────────────────────────────────────
 async function buildBadgePdf(p) {
-  // Slightly larger than a CR80 so it reads at conference distance and
-  // there is room for the lanyard clip cutout at the top.
-  const W = 3.5  * 72;  // 252pt
-  const H = 5.0  * 72;  // 360pt
-  const doc = new PDFDocument({ size: [W, H], margin: 0 });
+  // 2.5" × 4" — matches the React Badge dims so the print sheet and the
+  // emailed PDF are interchangeable.
+  const W = 2.5 * 72;  // 180pt
+  const H = 4.0 * 72;  // 288pt
+  const doc = new PDFDocument({ size: [W, H], margin: 0, autoFirstPage: false });
   const out = bufferizeDoc(doc);
 
   const theme = themeFor(p.templateId);
   const role  = roleColour(p.role);
   const code  = p.ticketCode || p.code || '';
 
-  // Background — soft neutral with a subtle inner card.
-  doc.rect(0, 0, W, H).fill('#F4F4F1');
+  // Pre-render the two QRs once each so we don't block the second page on
+  // network or CPU after the first finishes drawing.
+  let qrSmall = null, qrLarge = null;
+  try { qrSmall = await qrPngBuffer(checkInUrl(code), 200); } catch { /* graceful */ }
+  try { qrLarge = await qrPngBuffer(checkInUrl(code), 320); } catch { /* graceful */ }
 
-  // ── Card ──
-  const cardX = 12;
-  const cardY = 14;
-  const cardW = W - cardX * 2;
-  const cardH = H - cardY * 2;
+  doc.addPage({ size: [W, H], margin: 0 });
+  renderBadgeFront(doc, p, { W, H, theme, role, qrSmall, code });
 
-  // Shadow.
-  doc.save();
-  doc.fillColor('#0F172A').fillOpacity(0.10);
-  doc.roundedRect(cardX + 2, cardY + 6, cardW, cardH, 16).fill();
-  doc.restore();
+  doc.addPage({ size: [W, H], margin: 0 });
+  renderBadgeBack(doc,  p, { W, H, theme, role, qrLarge, code });
 
-  // Card surface.
-  doc.save();
-  doc.roundedRect(cardX, cardY, cardW, cardH, 16).clip();
-  doc.rect(cardX, cardY, cardW, cardH).fill('#FFFFFF');
-
-  // ── Header band — theme gradient ──
-  const bandH = 110;
-  paintDiagonalGradient(doc, cardX, cardY, cardW, bandH, theme.primary, theme.secondary);
-
-  // Lanyard clip slot (rounded rect cutout) — pure decoration but reads as
-  // "this is a badge".
-  doc.save();
-  doc.fillColor('#F4F4F1');
-  doc.roundedRect(cardX + cardW / 2 - 18, cardY + 8, 36, 7, 3.5).fill();
-  doc.restore();
-
-  // Eyebrow row inside the band.
-  doc.fillColor(theme.accent).font('Helvetica-Bold').fontSize(7.5)
-     .text(theme.label, cardX + 14, cardY + 24, { characterSpacing: 2.2, lineBreak: false });
-  // Event title — short, two-line cap.
-  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(11)
-     .text(p.eventTitle || 'Event', cardX + 14, cardY + 36, {
-       width: cardW - 28, ellipsis: true, height: 30,
-     });
-  // Sub line — date.
-  const dateText = fmtDate(p.eventStartsAt);
-  if (dateText) {
-    doc.fillColor('#FFFFFF').fillOpacity(0.85).font('Helvetica').fontSize(8)
-       .text(dateText, cardX + 14, cardY + 70, { lineBreak: false });
-    doc.fillOpacity(1);
-  }
-
-  // ── Photo — sits half on band, half on white body ──
-  const photoSize = 110;
-  const photoX = cardX + (cardW - photoSize) / 2;
-  const photoY = cardY + bandH - photoSize / 2;
-  // White ring around photo.
-  doc.save();
-  doc.fillColor('#FFFFFF');
-  doc.circle(photoX + photoSize / 2, photoY + photoSize / 2, photoSize / 2 + 4).fill();
-  doc.restore();
-  // Photo (round-clipped).
-  doc.save();
-  doc.circle(photoX + photoSize / 2, photoY + photoSize / 2, photoSize / 2).clip();
-  const buf = photoBuffer(p.attendeePhoto);
-  if (buf) {
-    try {
-      doc.image(buf, photoX, photoY, { width: photoSize, height: photoSize, fit: [photoSize, photoSize], align: 'center', valign: 'center' });
-    } catch {
-      paintDiagonalGradient(doc, photoX, photoY, photoSize, photoSize, role.from, role.to);
-      doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(40)
-         .text(initialsFrom(p.attendeeName), photoX, photoY + 30, { width: photoSize, align: 'center' });
-    }
-  } else {
-    paintDiagonalGradient(doc, photoX, photoY, photoSize, photoSize, role.from, role.to);
-    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(40)
-       .text(initialsFrom(p.attendeeName), photoX, photoY + 30, { width: photoSize, align: 'center' });
-  }
-  doc.restore();
-
-  // ── Name + role chip ──
-  let bodyY = photoY + photoSize + 14;
-  doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(16)
-     .text(p.attendeeName || 'Attendee', cardX + 12, bodyY, {
-       width: cardW - 24, align: 'center', ellipsis: true, lineBreak: false,
-     });
-  bodyY += 22;
-
-  // Role chip — centered, theme-coloured.
-  doc.font('Helvetica-Bold').fontSize(8);
-  const roleLabel = role.label.toUpperCase();
-  const rW = doc.widthOfString(roleLabel) + 22;
-  const rX = cardX + (cardW - rW) / 2;
-  doc.save();
-  doc.fillColor(role.from);
-  doc.roundedRect(rX, bodyY, rW, 18, 9).fill();
-  doc.restore();
-  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(8)
-     .text(roleLabel, rX, bodyY + 5.5, { width: rW, align: 'center', characterSpacing: 1.4, lineBreak: false });
-  bodyY += 28;
-
-  // Contact / sub-info stack — phone, ticket type, seat.
-  const subItems = [
-    p.attendeePhone ? p.attendeePhone : null,
-    p.ticketTypeName ? p.ticketTypeName : null,
-    p.seatLabel ? `Seat ${p.seatLabel}` : null,
-    p.roomLabel ? String(p.roomLabel).replace(/^.+ · /, '') : null,
-  ].filter(Boolean);
-  for (const line of subItems) {
-    doc.fillColor('#52525B').font('Helvetica').fontSize(9)
-       .text(line, cardX + 12, bodyY, {
-         width: cardW - 24, align: 'center', ellipsis: true, lineBreak: false,
-       });
-    bodyY += 13;
-  }
-
-  // ── Back-face panel — separated by dashed rule, holds the QR ──
-  bodyY += 6;
-  doc.save();
-  doc.strokeColor('#D4D4D8').lineWidth(0.6).dash(3, { space: 3 });
-  doc.moveTo(cardX + 18, bodyY).lineTo(cardX + cardW - 18, bodyY).stroke();
-  doc.undash();
-  doc.restore();
-  bodyY += 8;
-
-  // QR + code.
-  const qrSize = 70;
-  const qrX = cardX + (cardW - qrSize) / 2;
-  try {
-    const qr = await qrPngBuffer(checkInUrl(code), 320);
-    doc.image(qr, qrX, bodyY, { width: qrSize, height: qrSize });
-  } catch {
-    doc.lineWidth(1).strokeColor('#E5E7EB').rect(qrX, bodyY, qrSize, qrSize).stroke();
-  }
-  bodyY += qrSize + 4;
-  doc.fillColor('#71717A').font('Helvetica-Bold').fontSize(7)
-     .text('SCAN AT CHECK-IN', cardX, bodyY, {
-       width: cardW, align: 'center', characterSpacing: 1.5, lineBreak: false,
-     });
-  bodyY += 10;
-  doc.fillColor('#0F172A').font('Courier-Bold').fontSize(9)
-     .text(code, cardX, bodyY, { width: cardW, align: 'center', lineBreak: false });
-
-  // Brand footer.
-  doc.fillColor('#A1A1AA').font('Helvetica-Bold').fontSize(7)
-     .text('GOSPELAR', cardX, cardY + cardH - 14, {
-       width: cardW, align: 'center', characterSpacing: 2, lineBreak: false,
-     });
-
-  doc.restore(); // end card clip
   doc.end();
   return out;
+}
+
+// Shared chrome both sides paint first: theme-gradient body, dark vignette
+// at the bottom for legibility, and the lanyard clip + hole at the top.
+function paintBadgeChrome(doc, { W, H, theme }) {
+  // Card body — vertical gradient theme.primary → theme.secondary.
+  paintVerticalGradient(doc, 0, 0, W, H, theme.primary, theme.secondary);
+
+  // Vignette — three thin horizontal slabs near the bottom approximating
+  // the React `from-black/0 via-black/15 to-black/55` overlay. pdfkit has
+  // no real radial gradient so we layer rects with rising opacity.
+  doc.save();
+  doc.fillColor('#000000').fillOpacity(0.10);
+  doc.rect(0, H * 0.55, W, H * 0.20).fill();
+  doc.fillOpacity(0.22);
+  doc.rect(0, H * 0.75, W, H * 0.15).fill();
+  doc.fillOpacity(0.42);
+  doc.rect(0, H * 0.90, W, H * 0.10).fill();
+  doc.restore();
+
+  // Lanyard clip — dark notch (10pt wide × 3pt tall) with a white hole.
+  const clipW = 28, clipH = 8;
+  const clipX = (W - clipW) / 2;
+  doc.save();
+  doc.fillColor('#0F172A');
+  doc.roundedRect(clipX, 0, clipW, clipH, 3).fill();
+  // White slot in the middle of the clip — reads as the lanyard hole.
+  doc.fillColor('#FFFFFF').fillOpacity(0.85);
+  doc.roundedRect(clipX + 6, clipH - 3, clipW - 12, 2, 1).fill();
+  doc.restore();
+}
+
+// ── FRONT side — photo + name + role + seat + contact + small QR ─────
+function renderBadgeFront(doc, p, ctx) {
+  const { W, H, role, qrSmall, code } = ctx;
+  paintBadgeChrome(doc, ctx);
+
+  const PAD = 14;
+  let y = 22; // start below the lanyard clip
+
+  // Event title ribbon at the very top.
+  doc.fillColor('#FFFFFF').fillOpacity(0.95).font('Helvetica-Bold').fontSize(7)
+     .text(String(p.eventTitle || '').toUpperCase(), PAD, y, {
+       width: W - PAD * 2, align: 'center',
+       characterSpacing: 1.6, ellipsis: true, lineBreak: false,
+     });
+  doc.fillOpacity(1);
+  y += 16;
+
+  // Photo — 1.5" × 1.5" rounded square with a 3pt white ring.
+  const photoSize = 1.5 * 72; // 108pt
+  const photoX = (W - photoSize) / 2;
+  const photoY = y;
+  doc.save();
+  doc.fillColor('#FFFFFF').fillOpacity(0.85);
+  doc.roundedRect(photoX - 3, photoY - 3, photoSize + 6, photoSize + 6, 14).fill();
+  doc.restore();
+  drawAvatar(doc, {
+    x: photoX, y: photoY, size: photoSize,
+    photo: p.attendeePhoto, name: p.attendeeName, role: p.role, radius: 12,
+  });
+  y = photoY + photoSize + 14;
+
+  // Name — display extrabold, uppercase, centered, two-line cap.
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(15)
+     .text(String(p.attendeeName || 'Attendee').toUpperCase(), PAD, y, {
+       width: W - PAD * 2, align: 'center',
+       characterSpacing: 0.6, ellipsis: true, height: 36,
+     });
+  y += 30;
+
+  // Role / ticket type subtitle.
+  const subtitle = p.ticketTypeName || role.label;
+  doc.fillColor('#FFFFFF').fillOpacity(0.92).font('Helvetica').fontSize(9)
+     .text(subtitle, PAD, y, {
+       width: W - PAD * 2, align: 'center',
+       ellipsis: true, lineBreak: false,
+     });
+  doc.fillOpacity(1);
+  y += 14;
+
+  // Seat pill — only when assigned. Mirrors the React frosted chip.
+  if (p.seatLabel) {
+    doc.font('Helvetica-Bold').fontSize(10);
+    const labelW = doc.widthOfString(`SEAT  ${p.seatLabel}`) + 20;
+    const pillX = (W - labelW) / 2;
+    doc.save();
+    doc.fillColor('#FFFFFF').fillOpacity(0.18);
+    doc.roundedRect(pillX, y, labelW, 18, 9).fill();
+    doc.restore();
+    doc.fillColor('#FFFFFF').fillOpacity(0.85).font('Helvetica-Bold').fontSize(6.5)
+       .text('SEAT', pillX + 9, y + 6, { width: labelW, characterSpacing: 1.4, lineBreak: false });
+    doc.fillOpacity(1).font('Helvetica-Bold').fontSize(11)
+       .text(p.seatLabel, pillX + 32, y + 4, { lineBreak: false });
+    y += 24;
+  }
+
+  // Footer block sticks to the bottom — contact lines + code/QR row.
+  const FOOTER_BOTTOM = 14;
+  const qrSize = 28;
+  const footerY = H - FOOTER_BOTTOM - qrSize;
+
+  // Contact lines (phone, email) — centered, above the footer row.
+  const contactLines = [p.attendeePhone, p.attendeeEmail].filter(Boolean);
+  let cy = footerY - 6 - contactLines.length * 10;
+  for (const line of contactLines) {
+    doc.fillColor('#FFFFFF').fillOpacity(0.92).font('Helvetica').fontSize(8)
+       .text(line, PAD, cy, {
+         width: W - PAD * 2, align: 'center', ellipsis: true, lineBreak: false,
+       });
+    cy += 10;
+  }
+  doc.fillOpacity(1);
+
+  // Footer row: code (mono, left, opacity 0.8) + small QR (right).
+  doc.fillColor('#FFFFFF').fillOpacity(0.80).font('Courier-Bold').fontSize(7)
+     .text(code, PAD, footerY + qrSize - 9, {
+       width: W - PAD * 2 - qrSize - 8, characterSpacing: 0.8, lineBreak: false,
+     });
+  doc.fillOpacity(1);
+  if (qrSmall) {
+    // White rounded backdrop so the QR contrasts the gradient body.
+    doc.save();
+    doc.fillColor('#FFFFFF');
+    doc.roundedRect(W - PAD - qrSize, footerY, qrSize, qrSize, 3).fill();
+    doc.restore();
+    doc.image(qrSmall, W - PAD - qrSize + 2, footerY + 2, { width: qrSize - 4, height: qrSize - 4 });
+  }
+}
+
+// ── BACK side — brand mark + event title + logistics + big QR + code ─
+function renderBadgeBack(doc, p, ctx) {
+  const { W, H, qrLarge, code } = ctx;
+  paintBadgeChrome(doc, ctx);
+
+  const PAD = 14;
+  let y = 16;
+
+  // Brand row — small "G" square + "Gospelar Events" + "Official badge".
+  const markSize = 22;
+  doc.save();
+  doc.fillColor('#FFFFFF').fillOpacity(0.15);
+  doc.roundedRect(PAD, y, markSize, markSize, 5).fill();
+  doc.restore();
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(13)
+     .text('G', PAD, y + 4, { width: markSize, align: 'center', lineBreak: false });
+  doc.fillColor('#FFFFFF').fillOpacity(0.95).font('Helvetica-Bold').fontSize(7.5)
+     .text('GOSPELAR EVENTS', PAD + markSize + 6, y + 3, {
+       width: W - PAD * 2 - markSize - 6, characterSpacing: 1.6, lineBreak: false,
+     });
+  doc.fillColor('#FFFFFF').fillOpacity(0.70).font('Helvetica').fontSize(6.5)
+     .text('OFFICIAL BADGE', PAD + markSize + 6, y + 14, {
+       width: W - PAD * 2 - markSize - 6, characterSpacing: 1.4, lineBreak: false,
+     });
+  doc.fillOpacity(1);
+  y += markSize + 12;
+
+  // Event title — display extrabold 12pt, two-line cap.
+  doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(12)
+     .text(p.eventTitle || 'Event', PAD, y, {
+       width: W - PAD * 2, ellipsis: true, height: 30,
+     });
+  y += 32;
+
+  // Logistics block — When / Where / Ticket / Seat label-value rows.
+  const rows = [
+    ['WHEN',   fmtWhen(p.eventStartsAt)],
+    ['WHERE',  p.eventLocation],
+    ['TICKET', p.ticketTypeName],
+    ['SEAT',   p.seatLabel],
+  ].filter(([, v]) => v);
+
+  for (const [label, value] of rows) {
+    doc.fillColor('#FFFFFF').fillOpacity(0.65).font('Helvetica-Bold').fontSize(6)
+       .text(label, PAD, y + 1, { width: 30, characterSpacing: 1.4, lineBreak: false });
+    doc.fillOpacity(0.95).font('Helvetica').fontSize(8.5)
+       .text(String(value), PAD + 34, y, {
+         width: W - PAD - 34 - PAD, ellipsis: true, lineBreak: false,
+       });
+    y += 12;
+  }
+  doc.fillOpacity(1);
+
+  // Big QR + Code/host stack at the bottom — mirrors React Back layout.
+  const qrSize = 1.25 * 72; // 90pt
+  const qrX = PAD;
+  const qrY = H - PAD - qrSize - 4;
+
+  // White rounded backdrop for the big QR.
+  doc.save();
+  doc.fillColor('#FFFFFF');
+  doc.roundedRect(qrX - 4, qrY - 4, qrSize + 8, qrSize + 8, 8).fill();
+  doc.restore();
+  if (qrLarge) {
+    doc.image(qrLarge, qrX, qrY, { width: qrSize, height: qrSize });
+  }
+
+  // Code + websiteHost — right of the QR.
+  const textX = qrX + qrSize + 12;
+  const textW = W - textX - PAD;
+  let ty = qrY + 6;
+  doc.fillColor('#FFFFFF').fillOpacity(0.70).font('Helvetica-Bold').fontSize(6)
+     .text('CODE', textX, ty, { width: textW, characterSpacing: 1.4, lineBreak: false });
+  ty += 10;
+  doc.fillOpacity(1).font('Courier-Bold').fontSize(9)
+     .text(code, textX, ty, { width: textW, characterSpacing: 1.0, ellipsis: true, lineBreak: false });
+  ty += 16;
+  doc.fillColor('#FFFFFF').fillOpacity(0.80).font('Helvetica').fontSize(7)
+     .text('register.gospelar.com', textX, ty, { width: textW, ellipsis: true, lineBreak: false });
+  doc.fillOpacity(1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
