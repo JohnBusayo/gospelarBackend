@@ -1072,6 +1072,14 @@ const initDb = async () => {
     `ALTER TABLE events ADD COLUMN IF NOT EXISTS bank_account_name          TEXT`,
     `ALTER TABLE events ADD COLUMN IF NOT EXISTS bank_transfer_instructions TEXT`,
 
+    // Auditorium / seating grid. Both are 0 when the event is un-seated;
+    // when non-zero, Register.jsx + RsvpForm.jsx show a SeatMap step and the
+    // attendee picks one seat per ticket. Stored as plain ints so the row
+    // shape stays flat — the grid is regenerated client-side from rows ×
+    // seatsPerRow rather than enumerated per seat.
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS seating_rows    INT NOT NULL DEFAULT 0`,
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS seats_per_row   INT NOT NULL DEFAULT 0`,
+
     // Soft-reserve counters used by the pending bank-transfer flow. While a
     // registration is awaiting admin approval its quantity is added to
     // `held`; on approve it moves to `sold`; on reject / expire it drops

@@ -55,6 +55,13 @@ function eventRow(row, types = [], accommodation = []) {
     bankAccountNumber:     row.bank_account_number || '',
     bankAccountName:       row.bank_account_name || '',
     bankTransferInstructions: row.bank_transfer_instructions || '',
+    // Seating grid — both fields default to 0 in the DB, so an event with no
+    // auditorium layout sends rows: 0 / seatsPerRow: 0 and the front-end
+    // skips the seat-picker step entirely.
+    seating: {
+      rows:        row.seating_rows  || 0,
+      seatsPerRow: row.seats_per_row || 0,
+    },
     ticketTypes:           types,
     accommodation:         accommodation,
     createdAt:             row.created_at,
@@ -198,8 +205,9 @@ async function upsertEvent(ev) {
        (id, church_id, title, tagline, summary, starts_at, ends_at,
         registration_deadline, location, cover_color, banner_url, schedule,
         status, creator_email, requires_login, custom_questions, template_id,
-        bank_name, bank_account_number, bank_account_name, bank_transfer_instructions)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21)
+        bank_name, bank_account_number, bank_account_name, bank_transfer_instructions,
+        seating_rows, seats_per_row)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,$23)
      ON CONFLICT (id) DO UPDATE SET
        church_id                  = EXCLUDED.church_id,
        title                      = EXCLUDED.title,
@@ -220,6 +228,8 @@ async function upsertEvent(ev) {
        bank_account_number        = EXCLUDED.bank_account_number,
        bank_account_name          = EXCLUDED.bank_account_name,
        bank_transfer_instructions = EXCLUDED.bank_transfer_instructions,
+       seating_rows               = EXCLUDED.seating_rows,
+       seats_per_row              = EXCLUDED.seats_per_row,
        -- template_id is sticky once set (an event's "type" shouldn't change
        -- mid-life), and creator_email is set once on insert; later edits
        -- don't reassign either so a super-admin editing doesn't relabel.
@@ -241,6 +251,8 @@ async function upsertEvent(ev) {
       ev.bankAccountNumber || null,
       ev.bankAccountName || null,
       ev.bankTransferInstructions || null,
+      Math.max(0, parseInt(ev.seating?.rows || 0, 10) || 0),
+      Math.max(0, parseInt(ev.seating?.seatsPerRow || 0, 10) || 0),
     ],
   );
   const eventId = ins.rows[0].id;
