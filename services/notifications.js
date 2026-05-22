@@ -313,10 +313,23 @@ function ticketAndBadgeBodyHtml(p, firstName) {
     </table>
   `;
 
+  // Web badge link — points at the live /tickets/:code/badge page so the
+  // recipient can flip front/back and reprint without downloading the PDF.
+  // We derive it from p.ticketUrl (which is already {origin}/tickets/{code})
+  // so we don't have to thread an extra field through the payload pipeline.
+  const badgeUrl = p.ticketUrl ? `${p.ticketUrl}/badge` : null;
+  const badgeLinkHtml = badgeUrl ? `
+    <div style="margin:-12px 0 22px;font-size:12.5px;line-height:1.6">
+      Prefer to view it in a browser?
+      <a href="${esc(badgeUrl)}" style="color:#2563EB;font-weight:700;text-decoration:none">Open badge online →</a>
+    </div>
+  ` : '';
+
   return `
     ${heroHtml}
     ${ticketTagHtml(p)}
     ${downloadButtonsHtml(downloadUrls(p))}
+    ${badgeLinkHtml}
 
     <p style="margin:14px 0 10px;font-size:15px;line-height:1.55;color:#0F172A">
       Hi ${esc(firstName)},
