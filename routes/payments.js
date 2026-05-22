@@ -191,24 +191,48 @@ router.post('/api/payments/initialize', async (req, res) => {
   });
 });
 
-// Paystack redirects the user's WebView here after successful payment. The
-// mobile WebView intercepts this URL via onNavigationStateChange, reads the
-// `reference` query param, and POSTs to /api/verify-payment.
+// Paystack/Flutterwave/Stripe redirect the user's external browser here after
+// payment (the in-app WebView flow has been removed to comply with Google
+// Play's Payments policy — digital subscriptions must not be transacted from
+// inside a native WebView). This endpoint serves a short HTML page that
+// auto-redirects to the app's custom-scheme deep link, carrying the
+// reference so the app can call POST /api/verify-payment and activate the
+// subscription. The HTML "Return to app" button is the user-visible fallback
+// when the browser blocks the JS redirect.
 router.get('/api/payments/callback', (req, res) => {
-  const ref = String(req.query.reference || req.query.trxref || '');
+  const ref = String(
+    req.query.reference || req.query.trxref ||
+    req.query.tx_ref    || req.query.session_id || ''
+  );
+  const cancelled = /^(1|true)$/i.test(String(req.query.cancelled || ''));
+  const status    = cancelled ? 'cancelled' : (ref ? 'success' : 'failed');
+  const params    = new URLSearchParams({ status });
+  if (ref) params.set('ref', ref);
+  const deepLink  = `gospelar://payment-success?${params.toString()}`;
+  const deepLinkJson = JSON.stringify(deepLink);
+  const heading = cancelled ? 'Payment cancelled'
+                : (ref       ? 'Payment received'
+                             : 'Payment did not complete');
+  const subcopy = cancelled ? 'No charge was made. Returning you to the Gospelar app.'
+                : (ref       ? 'Returning you to the Gospelar app to confirm your subscription…'
+                             : 'We did not receive a reference from the payment provider. Open the app and try again.');
   res.set('Content-Type', 'text/html').send(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Payment received</title>
+<title>${heading}</title>
+<meta http-equiv="refresh" content="0;url=${deepLink}">
 <style>html,body{margin:0;height:100%;background:#0F172A;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;}
-.b{text-align:center;max-width:320px;padding:24px;}
+.b{text-align:center;max-width:340px;padding:24px;}
 .s{width:64px;height:64px;border:5px solid rgba(255,255,255,.18);border-top-color:#10B981;border-radius:50%;animation:spin .9s linear infinite;margin:0 auto 18px;}
 @keyframes spin{to{transform:rotate(360deg)}}
 h1{font-size:18px;margin:0 0 8px;font-weight:800}
-p{font-size:13px;color:rgba(255,255,255,.6);margin:0;line-height:1.5}</style>
+p{font-size:13px;color:rgba(255,255,255,.6);margin:0 0 18px;line-height:1.5}
+a.btn{display:inline-block;padding:11px 22px;border-radius:12px;background:#1A56DB;color:#fff;text-decoration:none;font-weight:800;font-size:13.5px}</style>
 </head><body><div class="b">
 <div class="s"></div>
-<h1>Payment received</h1>
-<p>Verifying with Paystack — your subscription will activate in a moment.</p>
+<h1>${heading}</h1>
+<p>${subcopy}</p>
+<a class="btn" href="${deepLink}">Return to app</a>
+<script>setTimeout(function(){window.location.href=${deepLinkJson};},150);</script>
 </div></body></html>`);
 });
 
