@@ -169,6 +169,44 @@ router.get('/api/church/me', churchAuth, (req, res) => {
   res.json(safe);
 });
 
+// Public church directory — used by EventDetails / TicketBadge to show the
+// host church on a public page, and by the admin ChurchSwitcher in the nav.
+// Returns approved churches only and strips admin_email/admin_token/etc.
+// so nothing sensitive leaks to anonymous viewers.
+router.get('/api/churches', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id, name, location, invite_code, created_at
+         FROM churches
+        WHERE COALESCE(approval_status, 'approved') = 'approved'
+        ORDER BY created_at DESC`,
+    );
+    res.json(r.rows);
+  } catch (e) {
+    console.error('GET /api/churches:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load churches.' });
+  }
+});
+
+router.get('/api/churches/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid church id.' });
+  try {
+    const r = await db.query(
+      `SELECT id, name, location, invite_code, created_at
+         FROM churches
+        WHERE id = $1
+          AND COALESCE(approval_status, 'approved') = 'approved'`,
+      [id],
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Church not found.' });
+    res.json(r.rows[0]);
+  } catch (e) {
+    console.error('GET /api/churches/:id:', e.code, e.message);
+    res.status(500).json({ error: 'Failed to load church.' });
+  }
+});
+
 router.get('/api/church/by-code/:code', async (req, res) => {
   try {
     const r = await db.query(
