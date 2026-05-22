@@ -234,328 +234,100 @@ function themeFor(templateId) {
   return TEMPLATE_THEMES[templateId] || TEMPLATE_THEMES.default;
 }
 
-// Builds the body for the ticket.confirmation email. Renders two distinct
-// surfaces inspired by physical event collateral:
+// Builds the body for the ticket.confirmation email. Layout (top → bottom):
 //
-//   1. Horizontal TICKET — main panel on the left (eyebrow + script tagline
-//      + big event title + date / time pills + venue + price + photo +
-//      ticket code) and a perforated stub on the right (event recap +
-//      barcode-style code). Theme colours come from TEMPLATE_THEMES,
-//      keyed by event.templateId — a wedding ticket reads pink/amber, a
-//      retreat reads emerald, a convention reads slate-navy, etc.
-//      Built with nested tables + linear-gradient backgrounds + a
-//      `border-left: 2px dashed` "perforation" line so it renders in
-//      Gmail, Outlook, Apple Mail without needing SVG / clip-path.
-//
-//   2. Portrait BADGE — lanyard clip on top, brand eyebrow, photo, big
-//      attendee name, role chip, contact lines, then a "back face" QR
-//      panel separated by a dashed rule. Bg uses the same template
-//      primary/secondary gradient so the badge reads as a matching set
-//      with the ticket.
+//   1. HERO CARD — theme-coloured gradient panel with a "YOU'RE IN!"
+//      eyebrow, the big event title, and a single "date · location" line.
+//      Sets the celebratory tone before the recipient reaches the data.
+//   2. ATTENDEE TAG — reuses the existing role-coloured ticketTag (left
+//      accent stripe + avatar + ATTENDEE chip + event eyebrow + name +
+//      code) so the digital ticket on the web and the email match.
+//   3. DOWNLOAD BUTTONS — Ticket PDF / Badge PDF / Form PDF, plus a hint
+//      that the same files are also attached.
+//   4. INTRO — "Hi {firstName}," + a short thanks line that calls out the
+//      ticket code so the recipient sees it before scrolling further.
+//   5. QR + DETAILS — two columns: scannable QR on the left, a label/value
+//      details table on the right (EVENT / WHEN / WHERE / TICKET / CODE).
+//   6. SIGN-OFF — "Need to make changes?" + "Grace and peace,".
 //
 // All measurements are inline so email clients without head-style support
 // (Outlook desktop, Gmail's classic renderer) still get the layout.
 function ticketAndBadgeBodyHtml(p, firstName) {
-  const theme    = themeFor(p.templateId);
-  const role     = roleColours(p.role);
-  const gradient = `linear-gradient(135deg, ${role.from} 0%, ${role.to} 100%)`;
-  // Theme-tinted gradients used across the ticket main panel + badge body
-  // so the two surfaces visually match (and shift per template).
-  const ticketBg = `linear-gradient(135deg, ${theme.primary} 0%, ${theme.secondary} 100%)`;
-  const stubBg   = theme.primary;
-  const qrUrl    = ticketQrSrc(p);
+  const theme   = themeFor(p.templateId);
+  const qrUrl   = ticketQrSrc(p);
   const whenLine = fmtWhen(p.eventStartsAt);
-  const photoSrc = p.attendeePhoto
-    ? (String(p.attendeePhoto).startsWith('data:')
-        ? p.attendeePhoto
-        : `data:image/jpeg;base64,${p.attendeePhoto}`)
-    : null;
-  const initials = String(p.attendeeName || '?')
-    .split(/\s+/).filter(Boolean).slice(0, 2)
-    .map((w) => (w[0] || '').toUpperCase()).join('') || '?';
+  // Hero card uses the same primary→secondary gradient the ticket+badge
+  // used to use, so the email still reads as "themed for this event".
+  const heroBg  = `linear-gradient(135deg, ${theme.primary} 0%, ${theme.secondary} 50%, ${theme.secondary} 100%)`;
+  // Short metadata line under the hero title: "Sat, 23 May 2026, 15:30 · Lagos"
+  const metaParts = [whenLine, p.eventLocation].filter(Boolean);
+  const metaLine  = metaParts.join('  ·  ');
 
-  // Date + time pills are rendered separately so the ticket main panel
-  // can show them side-by-side like the reference image's "20 MAY 2025"
-  // / "09:00 - 17:00" chips.
-  const dateText = p.eventStartsAt
-    ? new Date(p.eventStartsAt).toLocaleDateString('en-NG', { day: '2-digit', month: 'short', year: 'numeric' })
-    : null;
-  const timeText = p.eventStartsAt
-    ? new Date(p.eventStartsAt).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' })
-    : null;
-
-  // Price label — only shown when the ticket type has a non-zero price.
-  // Mirrors the "Price $30" circular chip from the reference.
-  const priceLabel = (p.priceCents && p.priceCents > 0)
-    ? `₦${(p.priceCents / 100).toLocaleString()}`
-    : '';
-
-  // ── TICKET (horizontal, theme-coloured) ─────────────────────────────
-  // Outer wrapper carries rounded corners + soft shadow. Inner cells are
-  // the wide main panel (~73%) and the perforated stub (~27%, fixed 170px).
-  const ticketHtml = `
-    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;margin:0 0 24px;border-radius:18px;overflow:hidden;box-shadow:0 18px 36px -18px rgba(8,16,80,0.35)">
+  // ── HERO CARD — "YOU'RE IN!" banner ─────────────────────────────────
+  // Wide gradient panel with celebratory eyebrow + event title + meta line.
+  // Linear-gradient backgrounds degrade to solid theme.primary in Outlook
+  // desktop, which still reads as branded.
+  const heroHtml = `
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;margin:0 0 18px;border-radius:18px;overflow:hidden;background:${theme.primary}">
       <tr>
-        <!-- MAIN PANEL — wide, gradient bg with photo + event info -->
-        <td valign="top" style="padding:24px 26px 22px;color:#FFFFFF;background:${ticketBg}">
-          <!-- Eyebrow row: TYPE label + script tagline -->
-          <div style="font-size:10px;font-weight:800;letter-spacing:0.28em;text-transform:uppercase;color:${theme.accent}">
-            ${esc(theme.label)} &middot; ADMIT ONE
+        <td style="padding:26px 28px;background:${heroBg};color:#FFFFFF">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.24em;text-transform:uppercase;color:rgba(255,255,255,0.85)">
+            You're in!
           </div>
-          <div style="margin-top:4px;font-size:14px;font-style:italic;color:rgba(255,255,255,0.85);font-family:Georgia,'Times New Roman',serif">
-            ${esc(theme.tagline)}
-          </div>
-
-          <!-- Event title — the visual anchor, biggest type on the email -->
-          <div style="margin-top:10px;font-size:26px;font-weight:900;letter-spacing:-0.5px;line-height:1.1;color:#FFFFFF">
+          <div style="margin-top:10px;font-size:24px;font-weight:900;letter-spacing:-0.4px;line-height:1.18;color:#FFFFFF">
             ${esc(p.eventTitle || 'Event')}
           </div>
-
-          <!-- Photo + name + date/time/location stack — two columns -->
-          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-top:16px">
-            <tr>
-              <td valign="top" width="100" style="padding-right:18px">
-                ${photoSrc
-                  ? `<img src="${photoSrc}" alt="" width="90" height="90" style="display:block;width:90px;height:90px;border-radius:14px;object-fit:cover;border:3px solid rgba(255,255,255,0.45)" />`
-                  : `<div style="width:90px;height:90px;border-radius:14px;background:rgba(255,255,255,0.18);color:#FFFFFF;font-weight:900;font-size:30px;line-height:90px;text-align:center;letter-spacing:0.5px;border:3px solid rgba(255,255,255,0.3)">${esc(initials)}</div>`}
-              </td>
-              <td valign="top">
-                <div style="font-size:11px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:rgba(255,255,255,0.7)">
-                  Attendee
-                </div>
-                <div style="margin-top:3px;font-size:16px;font-weight:800;color:#FFFFFF;line-height:1.3">
-                  ${esc(p.attendeeName || 'Attendee')}
-                </div>
-
-                <!-- Date / time pills — sit beneath the attendee block so
-                     they read as part of the same column. -->
-                ${dateText || timeText ? `
-                <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:12px">
-                  <tr>
-                    ${dateText ? `
-                    <td style="padding-right:6px">
-                      <div style="display:inline-block;padding:7px 12px;border-radius:999px;background:rgba(255,255,255,0.15);font-size:11.5px;font-weight:700;color:#FFFFFF;letter-spacing:0.04em;white-space:nowrap">
-                        📅 &nbsp;${esc(dateText.toUpperCase())}
-                      </div>
-                    </td>` : ''}
-                    ${timeText ? `
-                    <td>
-                      <div style="display:inline-block;padding:7px 12px;border-radius:999px;background:rgba(255,255,255,0.15);font-size:11.5px;font-weight:700;color:#FFFFFF;letter-spacing:0.04em;white-space:nowrap">
-                        🕘 &nbsp;${esc(timeText)}
-                      </div>
-                    </td>` : ''}
-                  </tr>
-                </table>` : ''}
-
-                ${p.eventLocation ? `<div style="margin-top:8px;font-size:12.5px;color:rgba(255,255,255,0.88)">📍 ${esc(p.eventLocation)}</div>` : ''}
-                ${p.seatLabel ? `<div style="margin-top:4px;font-size:12.5px;color:rgba(255,255,255,0.88)">💺 Seat <strong style="color:#FFFFFF">${esc(p.seatLabel)}</strong></div>` : ''}
-              </td>
-            </tr>
-          </table>
-
-          <!-- Footer row: price chip on the left, role on the right -->
-          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-top:18px;padding-top:16px;border-top:1px dashed rgba(255,255,255,0.30)">
-            <tr>
-              <td valign="middle">
-                ${priceLabel
-                  ? `<span style="display:inline-block;padding:7px 14px;border-radius:999px;background:rgba(255,255,255,0.15);color:#FFFFFF;font-size:12px;font-weight:800;letter-spacing:0.06em;border:1.5px solid ${theme.accent}"><span style="opacity:0.75;font-weight:600">Price</span> &nbsp;${esc(priceLabel)}</span>`
-                  : `<span style="display:inline-block;padding:7px 14px;border-radius:999px;background:rgba(255,255,255,0.10);color:rgba(255,255,255,0.85);font-size:11px;font-weight:700;letter-spacing:0.06em">Complimentary</span>`}
-              </td>
-              <td valign="middle" align="right" style="white-space:nowrap">
-                <span style="display:inline-block;padding:6px 12px;border-radius:999px;background:${gradient};color:#FFFFFF;font-size:10px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase">
-                  ${esc(role.label)}
-                </span>
-              </td>
-            </tr>
-          </table>
-
-          <!-- Code line at the very bottom -->
-          <div style="margin-top:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;letter-spacing:2.5px;color:rgba(255,255,255,0.95);font-weight:700">
-            ${esc(p.ticketCode || '')}
-          </div>
-        </td>
-
-        <!-- STUB — narrow vertical scan zone, theme primary bg -->
-        <td valign="top" style="width:170px;padding:24px 18px;color:#FFFFFF;background:${stubBg};border-left:2px dashed rgba(255,255,255,0.35)">
-          <div style="font-size:9px;font-weight:800;letter-spacing:0.28em;text-transform:uppercase;color:${theme.accent};margin-bottom:6px">
-            ${esc(theme.label)}
-          </div>
-          <div style="font-size:14px;font-weight:800;line-height:1.2;color:#FFFFFF;margin-bottom:16px">
-            ${esc(p.eventTitle || 'Event')}
-          </div>
-
-          ${dateText ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:5px;line-height:1.4">📅 &nbsp;${esc(dateText)}</div>` : ''}
-          ${timeText ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:5px;line-height:1.4">🕘 &nbsp;${esc(timeText)}</div>` : ''}
-          ${p.eventLocation ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:5px;line-height:1.4">📍 &nbsp;${esc(String(p.eventLocation).slice(0, 30))}</div>` : ''}
-          ${p.seatLabel ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:5px;line-height:1.4">💺 &nbsp;Seat <strong>${esc(p.seatLabel)}</strong></div>` : ''}
-          ${p.ticketTypeName ? `<div style="font-size:11px;color:rgba(255,255,255,0.85);margin-bottom:5px;line-height:1.4">🎟 &nbsp;${esc(p.ticketTypeName)}</div>` : ''}
-
-          <!-- White barcode panel — Libre Barcode 128 web font, mono fallback -->
-          <div style="margin-top:18px;padding:10px 8px 6px;background:#FFFFFF;border-radius:8px;text-align:center">
-            <div style="font-family:'Libre Barcode 128',monospace;font-size:40px;color:#0F172A;letter-spacing:1px;line-height:1">
-              ${esc(p.ticketCode || '')}
-            </div>
-            <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:9px;color:#475569;letter-spacing:1.5px;margin-top:2px">
-              ${esc(p.ticketCode || '')}
-            </div>
-          </div>
+          ${metaLine ? `
+            <div style="margin-top:8px;font-size:13px;color:rgba(255,255,255,0.92);letter-spacing:0.01em">
+              ${esc(metaLine)}
+            </div>` : ''}
         </td>
       </tr>
     </table>
   `;
 
-  // ── BADGE (portrait, hanging lanyard) ───────────────────────────────
-  // Theme-tinted gradient body. The lanyard "clip" is a small dark
-  // trapezoid sitting above the badge with a white "hole" punched through
-  // the top of the card — same visual cue as the reference image, built
-  // from regular divs so every email client renders it.
-  const badgeBg = `linear-gradient(170deg, ${theme.secondary} 0%, ${theme.primary} 55%, #0F172A 110%)`;
-  const badgeHtml = `
-    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin:0 0 24px">
+  // ── QR + DETAILS ROW ────────────────────────────────────────────────
+  // Two-column table: 180px QR on the left, label/value details on the
+  // right. Outlook ignores width:% on cells but respects fixed widths,
+  // hence the explicit 180 / "*" pattern. Rows skip empty values so a
+  // free event with no seating doesn't render blank lines.
+  const qrAndDetailsHtml = `
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin:0 0 22px">
       <tr>
-        <td align="center">
-          <!-- Lanyard strap stub — two thin parallel lines above the clip,
-               purely decorative so the badge reads as "hanging". -->
-          <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 auto">
-            <tr>
-              <td style="width:14px;height:28px;background:#94A3B8;border-radius:2px"></td>
-              <td style="width:18px"></td>
-              <td style="width:14px;height:28px;background:#94A3B8;border-radius:2px"></td>
-            </tr>
-          </table>
-          <!-- Clip body (dark trapezoid) + hole punched through -->
-          <div style="width:54px;height:24px;background:#1F2937;border-radius:8px 8px 4px 4px;margin:-4px auto 0"></div>
-          <div style="width:16px;height:16px;background:#FFFFFF;border:2px solid #1F2937;border-radius:50%;margin:-12px auto 0"></div>
-
-          <!-- BADGE CARD — portrait aspect, theme gradient body -->
-          <table role="presentation" cellpadding="0" cellspacing="0" width="340" style="max-width:340px;border-collapse:separate;border-spacing:0;background:${badgeBg};color:#FFFFFF;border-radius:18px;overflow:hidden;margin-top:8px;box-shadow:0 22px 44px -22px rgba(8,16,80,0.45)">
-
-            <!-- Top eyebrow ribbon — event type label -->
-            <tr>
-              <td style="padding:18px 20px 0;text-align:center">
-                <div style="font-size:9px;font-weight:800;letter-spacing:0.32em;text-transform:uppercase;color:${theme.accent}">
-                  ${esc(theme.label)}
-                </div>
-                <div style="margin-top:3px;font-size:11px;font-style:italic;color:rgba(255,255,255,0.75);font-family:Georgia,'Times New Roman',serif">
-                  ${esc(theme.tagline)}
-                </div>
-              </td>
-            </tr>
-
-            <!-- Photo — big, rounded square, centered -->
-            <tr>
-              <td style="padding:18px 20px 0">
-                <div align="center">
-                  ${photoSrc
-                    ? `<img src="${photoSrc}" alt="" width="140" height="140" style="display:block;width:140px;height:140px;border-radius:18px;object-fit:cover;border:4px solid rgba(255,255,255,0.55)" />`
-                    : `<div style="width:140px;height:140px;border-radius:18px;background:${gradient};color:#FFFFFF;font-weight:900;font-size:48px;line-height:140px;text-align:center;border:4px solid rgba(255,255,255,0.4);margin:0 auto">${esc(initials)}</div>`}
-                </div>
-              </td>
-            </tr>
-
-            <!-- Name + role chip -->
-            <tr>
-              <td style="padding:16px 20px 0;text-align:center">
-                <div style="font-size:24px;font-weight:900;letter-spacing:-0.4px;color:#FFFFFF;line-height:1.1;text-transform:uppercase">
-                  ${esc(p.attendeeName || 'Attendee')}
-                </div>
-                <div style="margin-top:10px">
-                  <span style="display:inline-block;padding:6px 14px;border-radius:999px;background:${gradient};color:#FFFFFF;font-size:10px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase">
-                    ${esc(role.label)}
-                  </span>
-                </div>
-              </td>
-            </tr>
-
-            <!-- Contact stack — phone + email -->
-            ${(p.attendeeEmail || p.attendeePhone) ? `
-            <tr>
-              <td style="padding:14px 20px 0;text-align:center">
-                ${p.attendeePhone ? `<div style="font-size:12px;color:rgba(255,255,255,0.88);letter-spacing:0.04em;margin-bottom:4px">☎ &nbsp;${esc(p.attendeePhone)}</div>` : ''}
-                ${p.attendeeEmail ? `<div style="font-size:12px;color:rgba(255,255,255,0.88);letter-spacing:0.04em;word-break:break-all">✉ &nbsp;${esc(p.attendeeEmail)}</div>` : ''}
-              </td>
-            </tr>` : ''}
-
-            <!-- Divider rule between the "front" identity and the "back"
-                 scan-section — dashed white to evoke a fold line. -->
-            <tr>
-              <td style="padding:18px 20px 0">
-                <div style="border-top:1px dashed rgba(255,255,255,0.30)"></div>
-              </td>
-            </tr>
-
-            <!-- "Back" section — event recap + QR -->
-            <tr>
-              <td style="padding:14px 20px 0;text-align:center">
-                <div style="font-size:11px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:rgba(255,255,255,0.7);margin-bottom:6px">
-                  Scan at check-in
-                </div>
-                <div style="font-size:13px;font-weight:800;color:#FFFFFF;line-height:1.25;margin-bottom:4px">
-                  ${esc(p.eventTitle || 'Event')}
-                </div>
-                ${dateText ? `<div style="font-size:11px;color:rgba(255,255,255,0.8);margin-bottom:2px">${esc(dateText)}${timeText ? ` · ${esc(timeText)}` : ''}</div>` : ''}
-                ${p.eventLocation ? `<div style="font-size:11px;color:rgba(255,255,255,0.8)">${esc(p.eventLocation)}</div>` : ''}
-              </td>
-            </tr>
-
-            <!-- QR panel — white background so the QR reads cleanly -->
-            <tr>
-              <td style="padding:14px 20px 22px">
-                <div align="center">
-                  <div style="display:inline-block;padding:12px;background:#FFFFFF;border-radius:14px;line-height:0">
-                    <img src="${qrUrl}" alt="QR code for ${esc(p.ticketCode)}" width="140" height="140" style="display:block;width:140px;height:140px" />
-                  </div>
-                </div>
-                <div align="center" style="margin-top:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;letter-spacing:2.5px;color:#FFFFFF;font-weight:700">
-                  ${esc(p.ticketCode || '')}
-                </div>
-              </td>
-            </tr>
-          </table>
-
-          <!-- Caption -->
-          <div style="margin-top:10px;font-size:11px;color:#64748B;letter-spacing:0.04em">
-            Print, show on a phone, or wear at the door.
+        <td valign="top" width="180" style="padding-right:18px">
+          <div style="display:inline-block;padding:8px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;line-height:0">
+            <img src="${qrUrl}" alt="QR code for ${esc(p.ticketCode)}" width="160" height="160" style="display:block;width:160px;height:160px" />
           </div>
         </td>
-      </tr>
-    </table>
-  `;
-
-  // Small section header used to label the two artifacts. Accent line on
-  // the left tints to the template theme so the whole email reads as one
-  // piece per event type.
-  const sectionLabel = (text) => `
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 12px">
-      <tr>
-        <td style="width:24px;height:2px;background:${theme.secondary};vertical-align:middle"></td>
-        <td style="padding-left:10px;font-size:10px;font-weight:800;letter-spacing:0.28em;text-transform:uppercase;color:#64748B;vertical-align:middle">
-          ${text}
+        <td valign="top">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">
+            ${detailRow('Event',  esc(p.eventTitle || ''))}
+            ${detailRow('When',   esc(whenLine || ''))}
+            ${detailRow('Where',  esc(p.eventLocation || ''))}
+            ${detailRow('Ticket', esc(p.ticketTypeName || 'General admission'))}
+            ${detailRow('Code',   `<span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;letter-spacing:1px">${esc(p.ticketCode || '')}</span>`)}
+            ${p.seatLabel ? detailRow('Seat', esc(p.seatLabel)) : ''}
+          </table>
         </td>
       </tr>
     </table>
   `;
 
   return `
-    <p style="margin:0 0 10px;font-size:15px;line-height:1.55;color:#0F172A">
+    ${heroHtml}
+    ${ticketTagHtml(p)}
+    ${downloadButtonsHtml(downloadUrls(p))}
+
+    <p style="margin:14px 0 10px;font-size:15px;line-height:1.55;color:#0F172A">
       Hi ${esc(firstName)},
     </p>
     <p style="margin:0 0 22px;font-size:14.5px;line-height:1.6;color:#334155">
       Thanks for registering for <strong style="color:#0F172A">${esc(p.eventTitle || 'this event')}</strong>.
-      Your ticket and badge are below — show either QR code at the door, or
-      read out the code
+      Your ticket is below — show this QR code at check-in, or read out the code
       <span style="font-family:ui-monospace,Menlo,monospace;font-weight:700;color:#0F172A">${esc(p.ticketCode)}</span>.
     </p>
 
-    ${sectionLabel('Your ticket')}
-    ${ticketHtml}
-
-    ${sectionLabel('Your badge')}
-    ${badgeHtml}
-
-    <div style="margin:24px 0 16px;border-top:1px solid #E2E8F0"></div>
-
-    ${downloadButtonsHtml(downloadUrls(p))}
+    ${qrAndDetailsHtml}
 
     <p style="margin:20px 0 8px;font-size:14px;color:#334155;line-height:1.6">
       Need to make changes? Reply to this email and we'll help.
@@ -565,6 +337,7 @@ function ticketAndBadgeBodyHtml(p, firstName) {
     </p>
   `;
 }
+
 
 const TEMPLATES = {
   // Event registration confirmation — fires once per attendee right after
