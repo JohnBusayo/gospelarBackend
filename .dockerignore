@@ -1,0 +1,19 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.DS_Store
+
+# Local-only / dev-only files we don't want shipping to production
+README.md
+scripts/
+data/
+seed.js
+
+# Editor / OS noise
+.vscode
+.idea
+*.log
