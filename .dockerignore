@@ -7,10 +7,12 @@ npm-debug.log
 .gitignore
 .DS_Store
 
-# Local-only / dev-only files we don't want shipping to production
+# Local-only / dev-only files we don't want shipping to production.
+# Note: data/ stays in the image — routes/content.js requires data/uiSeedKeys.js
+# at runtime, and middleware reads data/membership.js. They're not seed data,
+# they're source modules that happen to live in data/.
 README.md
 scripts/
-data/
 seed.js
 
 # Editor / OS noise
