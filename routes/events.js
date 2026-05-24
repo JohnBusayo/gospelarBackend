@@ -724,9 +724,10 @@ router.post('/api/events/:id/register', async (req, res) => {
     // frontend can render the confirmation card without a second fetch.
     const ticketTypeName    = ttRow.name;
     const accommodationName = accRow?.name || null;
-    const eventTitle        = ev.rows[0].title;
-    const eventStartsAt     = ev.rows[0].starts_at;
-    const eventLocation     = ev.rows[0].location;
+    const eventRow          = ev.rows[0];
+    const eventTitle        = eventRow.title;
+    const eventStartsAt     = eventRow.starts_at;
+    const eventLocation     = eventRow.location;
     const decorated = tickets.map((t) => ticketRow({
       ...t,
       event_title: eventTitle, event_starts_at: eventStartsAt, event_location: eventLocation,
@@ -743,7 +744,7 @@ router.post('/api/events/:id/register', async (req, res) => {
     // logged to notification_log and don't block the response.
     // Pulled once outside the loop so every email in the batch reads the
     // same template + price (and so the email theme matches the event).
-    const eventTemplateId = ev.rows[0].template_id || null;
+    const eventTemplateId = eventRow.template_id || null;
     const ticketPriceCents = ttRow.price_cents || 0;
 
     Promise.all(decorated.map((t) => {
@@ -757,6 +758,16 @@ router.post('/api/events/:id/register', async (req, res) => {
           eventTitle:        t.eventTitle,
           eventStartsAt:     t.eventStartsAt,
           eventLocation:     t.eventLocation,
+          // Extra event fields surfaced in the confirmation email body.
+          // The ticket + badge visuals now live only in the attached PDFs,
+          // so the email leans on these to communicate event context.
+          eventTagline:              eventRow.tagline || null,
+          eventSummary:              eventRow.summary || null,
+          eventEndsAt:               eventRow.ends_at || null,
+          eventRegistrationDeadline: eventRow.registration_deadline || null,
+          eventSchedule:             eventRow.schedule || null,
+          eventBannerUrl:            eventRow.banner_url || null,
+          organizerEmail:            eventRow.creator_email || null,
           attendeeName:      t.attendeeName,
           attendeeEmail:     t.attendeeEmail,
           attendeePhone:     t.attendeePhone,

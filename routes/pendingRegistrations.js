@@ -356,7 +356,10 @@ router.post('/api/admin/pending-registrations/:id/approve', userAuth, async (req
     // template_id pulled too so the confirmation email picks the right theme.
     const pr = await client.query(
       `SELECT p.*, e.creator_email, e.title AS event_title, e.starts_at AS event_starts_at,
-              e.location AS event_location, e.template_id AS event_template_id
+              e.location AS event_location, e.template_id AS event_template_id,
+              e.tagline AS event_tagline, e.summary AS event_summary,
+              e.ends_at AS event_ends_at, e.registration_deadline AS event_registration_deadline,
+              e.schedule AS event_schedule, e.banner_url AS event_banner_url
          FROM pending_registrations p
          JOIN events e ON e.id = p.event_id
         WHERE p.id = $1
@@ -515,6 +518,16 @@ router.post('/api/admin/pending-registrations/:id/approve', userAuth, async (req
           eventTitle:        p.event_title,
           eventStartsAt:     p.event_starts_at,
           eventLocation:     p.event_location,
+          // Mirror the standard register handler: surface event-level context
+          // in the confirmation body now that the ticket + badge visuals live
+          // only in the attached PDFs.
+          eventTagline:              p.event_tagline || null,
+          eventSummary:              p.event_summary || null,
+          eventEndsAt:               p.event_ends_at || null,
+          eventRegistrationDeadline: p.event_registration_deadline || null,
+          eventSchedule:             p.event_schedule || null,
+          eventBannerUrl:            p.event_banner_url || null,
+          organizerEmail:            p.creator_email || null,
           attendeeName:      t.attendee_name,
           attendeeEmail:     t.attendee_email,
           attendeePhone:     t.attendee_phone,

@@ -234,28 +234,35 @@ function themeFor(templateId) {
   return TEMPLATE_THEMES[templateId] || TEMPLATE_THEMES.default;
 }
 
-// Builds the body for the ticket.confirmation email. Layout (top → bottom):
+// Builds the body for the ticket.confirmation email. The actual ticket QR
+// and the printable badge live ONLY in the attached PDFs (and the download
+// buttons below) — the email body itself focuses on the event so the
+// recipient gets all the context they need without having to open the
+// attachment. Layout (top → bottom):
 //
 //   1. HERO CARD — theme-coloured gradient panel with a "YOU'RE IN!"
-//      eyebrow, the big event title, and a single "date · location" line.
-//      Sets the celebratory tone before the recipient reaches the data.
-//   2. ATTENDEE TAG — reuses the existing role-coloured ticketTag (left
-//      accent stripe + avatar + ATTENDEE chip + event eyebrow + name +
-//      code) so the digital ticket on the web and the email match.
-//   3. DOWNLOAD BUTTONS — Ticket PDF / Badge PDF / Form PDF, plus a hint
-//      that the same files are also attached.
-//   4. INTRO — "Hi {firstName}," + a short thanks line that calls out the
-//      ticket code so the recipient sees it before scrolling further.
-//   5. QR + DETAILS — two columns: scannable QR on the left, a label/value
-//      details table on the right (EVENT / WHEN / WHERE / TICKET / CODE).
-//   6. SIGN-OFF — "Need to make changes?" + "Grace and peace,".
+//      eyebrow, the big event title, an optional tagline, and a single
+//      "date · location" meta line.
+//   2. OPTIONAL BANNER — admin-uploaded event banner image, if any.
+//   3. INTRO — "Hi {firstName}," + a short thanks line that points the
+//      recipient at the attached PDFs (no QR or ticket code inline).
+//   4. DOWNLOAD BUTTONS — Ticket PDF / Badge PDF / Form PDF. These same
+//      files are attached to the email; the buttons are a fallback for
+//      inboxes that hide attachments.
+//   5. EVENT DETAILS PANEL — label/value rows: WHEN / ENDS / WHERE /
+//      RSVP BY, plus the event summary as a free-text block.
+//   6. SCHEDULE — optional bulleted list grouped by day, when the admin
+//      filled in the schedule on event creation.
+//   7. ORGANIZER — reply-to line so the recipient knows who to contact.
+//   8. SIGN-OFF — "Grace and peace,".
 //
 // All measurements are inline so email clients without head-style support
 // (Outlook desktop, Gmail's classic renderer) still get the layout.
 function ticketAndBadgeBodyHtml(p, firstName) {
-  const theme   = themeFor(p.templateId);
-  const qrUrl   = ticketQrSrc(p);
+  const theme    = themeFor(p.templateId);
   const whenLine = fmtWhen(p.eventStartsAt);
+  const endsLine = fmtWhen(p.eventEndsAt);
+  const deadlineLine = fmtWhen(p.eventRegistrationDeadline);
   // Hero card uses the same primary→secondary gradient the ticket+badge
   // used to use, so the email still reads as "themed for this event".
   const heroBg  = `linear-gradient(135deg, ${theme.primary} 0%, ${theme.secondary} 50%, ${theme.secondary} 100%)`;
@@ -277,6 +284,10 @@ function ticketAndBadgeBodyHtml(p, firstName) {
           <div style="margin-top:10px;font-size:24px;font-weight:900;letter-spacing:-0.4px;line-height:1.18;color:#FFFFFF">
             ${esc(p.eventTitle || 'Event')}
           </div>
+          ${p.eventTagline ? `
+            <div style="margin-top:6px;font-size:13.5px;font-style:italic;color:rgba(255,255,255,0.92);letter-spacing:0.01em">
+              ${esc(p.eventTagline)}
+            </div>` : ''}
           ${metaLine ? `
             <div style="margin-top:8px;font-size:13px;color:rgba(255,255,255,0.92);letter-spacing:0.01em">
               ${esc(metaLine)}
@@ -286,65 +297,113 @@ function ticketAndBadgeBodyHtml(p, firstName) {
     </table>
   `;
 
-  // ── QR + DETAILS ROW ────────────────────────────────────────────────
-  // Two-column table: 180px QR on the left, label/value details on the
-  // right. Outlook ignores width:% on cells but respects fixed widths,
-  // hence the explicit 180 / "*" pattern. Rows skip empty values so a
-  // free event with no seating doesn't render blank lines.
-  const qrAndDetailsHtml = `
-    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin:0 0 22px">
-      <tr>
-        <td valign="top" width="180" style="padding-right:18px">
-          <div style="display:inline-block;padding:8px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;line-height:0">
-            <img src="${qrUrl}" alt="QR code for ${esc(p.ticketCode)}" width="160" height="160" style="display:block;width:160px;height:160px" />
-          </div>
-        </td>
-        <td valign="top">
-          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">
-            ${detailRow('Event',  esc(p.eventTitle || ''))}
-            ${detailRow('When',   esc(whenLine || ''))}
-            ${detailRow('Where',  esc(p.eventLocation || ''))}
-            ${detailRow('Ticket', esc(p.ticketTypeName || 'General admission'))}
-            ${detailRow('Code',   `<span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;letter-spacing:1px">${esc(p.ticketCode || '')}</span>`)}
-            ${p.seatLabel ? detailRow('Seat', esc(p.seatLabel)) : ''}
-          </table>
-        </td>
-      </tr>
-    </table>
-  `;
-
-  // Web badge link — points at the live /tickets/:code/badge page so the
-  // recipient can flip front/back and reprint without downloading the PDF.
-  // We derive it from p.ticketUrl (which is already {origin}/tickets/{code})
-  // so we don't have to thread an extra field through the payload pipeline.
-  const badgeUrl = p.ticketUrl ? `${p.ticketUrl}/badge` : null;
-  const badgeLinkHtml = badgeUrl ? `
-    <div style="margin:-12px 0 22px;font-size:12.5px;line-height:1.6">
-      Prefer to view it in a browser?
-      <a href="${esc(badgeUrl)}" style="color:#2563EB;font-weight:700;text-decoration:none">Open badge online →</a>
+  // ── OPTIONAL BANNER IMAGE ──────────────────────────────────────────
+  // Only rendered when the admin uploaded a banner_url on the event. Width
+  // capped to the 504px column so it always fits.
+  const bannerHtml = p.eventBannerUrl ? `
+    <div style="margin:0 0 20px;border-radius:14px;overflow:hidden;line-height:0;background:#F1F5F9">
+      <img src="${esc(p.eventBannerUrl)}" alt="" width="504" style="display:block;width:100%;max-width:504px;height:auto" />
     </div>
   ` : '';
 
+  // ── EVENT DETAILS PANEL ────────────────────────────────────────────
+  // Surface-card with label/value rows. Skips empty rows. The summary
+  // (long-form description) sits below the rows as wrapped paragraph text.
+  const summaryParaHtml = p.eventSummary ? `
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid #E2E8F0;font-size:14px;line-height:1.65;color:#334155;white-space:pre-wrap">
+      ${esc(p.eventSummary)}
+    </div>
+  ` : '';
+
+  const detailsRows = [
+    detailRow('When',     esc(whenLine || '')),
+    endsLine     ? detailRow('Ends',    esc(endsLine)) : '',
+    detailRow('Where',    esc(p.eventLocation || '')),
+    deadlineLine ? detailRow('RSVP by', esc(deadlineLine)) : '',
+  ].filter(Boolean).join('');
+
+  const detailsPanelHtml = (detailsRows || summaryParaHtml) ? `
+    <div style="margin:0 0 22px;padding:18px 20px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:14px">
+      <div style="font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#64748B;margin-bottom:10px">
+        Event details
+      </div>
+      ${detailsRows ? `
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">
+          ${detailsRows}
+        </table>` : ''}
+      ${summaryParaHtml}
+    </div>
+  ` : '';
+
+  // ── SCHEDULE ────────────────────────────────────────────────────────
+  // The schedule JSONB is an array of { day, items: string[] }. Falls back
+  // gracefully if the admin left it blank or fed in a malformed shape.
+  const scheduleHtml = (() => {
+    const raw = p.eventSchedule;
+    const days = Array.isArray(raw) ? raw : null;
+    if (!days || !days.length) return '';
+    const dayBlocks = days
+      .map((d) => {
+        const items = Array.isArray(d?.items) ? d.items.filter((x) => String(x || '').trim()) : [];
+        if (!d?.day && !items.length) return '';
+        const itemList = items.length
+          ? `<ul style="margin:6px 0 0;padding-left:18px;font-size:14px;line-height:1.6;color:#334155">
+               ${items.map((it) => `<li style="margin:0 0 4px">${esc(it)}</li>`).join('')}
+             </ul>`
+          : '';
+        return `
+          <div style="margin:0 0 12px">
+            ${d.day ? `<div style="font-size:13px;font-weight:800;color:#0F172A;letter-spacing:-0.1px">${esc(d.day)}</div>` : ''}
+            ${itemList}
+          </div>`;
+      })
+      .filter(Boolean)
+      .join('');
+    if (!dayBlocks) return '';
+    return `
+      <div style="margin:0 0 22px;padding:18px 20px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:14px">
+        <div style="font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#64748B;margin-bottom:10px">
+          Schedule
+        </div>
+        ${dayBlocks}
+      </div>
+    `;
+  })();
+
+  // ── ORGANIZER ──────────────────────────────────────────────────────
+  // Best-effort reply-to line. Falls back to "reply to this email" copy
+  // when the event row has no creator_email on it.
+  const organizerHtml = p.organizerEmail ? `
+    <p style="margin:18px 0 8px;font-size:14px;color:#334155;line-height:1.6">
+      Questions? Reach the organizer at
+      <a href="mailto:${esc(p.organizerEmail)}" style="color:#2563EB;font-weight:700;text-decoration:none">${esc(p.organizerEmail)}</a>.
+    </p>
+  ` : `
+    <p style="margin:18px 0 8px;font-size:14px;color:#334155;line-height:1.6">
+      Questions? Reply to this email and we'll route it to the organizer.
+    </p>
+  `;
+
   return `
     ${heroHtml}
-    ${ticketTagHtml(p)}
-    ${downloadButtonsHtml(downloadUrls(p))}
-    ${badgeLinkHtml}
+    ${bannerHtml}
 
-    <p style="margin:14px 0 10px;font-size:15px;line-height:1.55;color:#0F172A">
+    <p style="margin:6px 0 10px;font-size:15px;line-height:1.55;color:#0F172A">
       Hi ${esc(firstName)},
     </p>
     <p style="margin:0 0 22px;font-size:14.5px;line-height:1.6;color:#334155">
       Thanks for registering for <strong style="color:#0F172A">${esc(p.eventTitle || 'this event')}</strong>.
-      Your ticket is below — show this QR code at check-in, or read out the code
-      <span style="font-family:ui-monospace,Menlo,monospace;font-weight:700;color:#0F172A">${esc(p.ticketCode)}</span>.
+      Your ticket and printable badge are attached as PDFs — bring either one
+      (printed or on your phone) to check-in. The details below cover what to
+      expect on the day.
     </p>
 
-    ${qrAndDetailsHtml}
+    ${downloadButtonsHtml(downloadUrls(p))}
 
-    <p style="margin:20px 0 8px;font-size:14px;color:#334155;line-height:1.6">
-      Need to make changes? Reply to this email and we'll help.
-    </p>
+    ${detailsPanelHtml}
+    ${scheduleHtml}
+
+    ${organizerHtml}
     <p style="margin:0;font-size:14px;color:#334155;line-height:1.6">
       Grace and peace,<br/><strong style="color:#0F172A">The Gospelar team</strong>
     </p>
