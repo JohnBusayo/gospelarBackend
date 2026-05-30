@@ -240,28 +240,27 @@ function themeFor(templateId) {
 // recipient gets all the context they need without having to open the
 // attachment. Layout (top → bottom):
 //
-//   1. BANNER IMAGE — admin-uploaded event banner, full-width across the
-//      top of the body, when the event has one.
-//   2. HERO CARD — theme-coloured gradient panel with a "YOU'RE IN!"
+//   1. HERO CARD — theme-coloured gradient panel with a "YOU'RE IN!"
 //      eyebrow, the big event title, an optional tagline, and a single
 //      "date · location" meta line.
-//   3. INTRO — "Hi {firstName}," + a short thanks line that points the
+//   2. INTRO — "Hi {firstName}," + a short thanks line that points the
 //      recipient at the attached PDFs (no QR or ticket code inline).
-//   4. DOWNLOAD BUTTONS — Ticket PDF / Badge PDF / Form PDF. These same
+//   3. DOWNLOAD BUTTONS — Ticket PDF / Badge PDF / Form PDF. These same
 //      files are attached to the email; the buttons are a fallback for
 //      inboxes that hide attachments.
-//   5. EVENT DETAILS PANEL — label/value rows: WHEN / ENDS / WHERE /
+//   4. EVENT DETAILS PANEL — label/value rows: WHEN / ENDS / WHERE /
 //      RSVP BY (with a 'View map' link on Where when a location is set),
 //      plus the event summary as a free-text block.
-//   6. YOUR BOOKING PANEL — attendee-specific allocations (ticket type,
+//   5. YOUR BOOKING PANEL — attendee-specific allocations (ticket type,
 //      accommodation, room, seat, group, price). Skipped if the event
 //      is free / unallocated.
-//   7. ORGANIZER — reply-to line so the recipient knows who to contact.
-//   8. SIGN-OFF — "Grace and peace,".
+//   6. ORGANIZER — reply-to line so the recipient knows who to contact.
+//   7. SIGN-OFF — "Grace and peace,".
 //
-// Note: the email body intentionally embeds NO base64 (data:) images — an
-// inlined banner/photo can exceed Gmail's ~102KB clip limit and trigger
-// "[Message clipped] View entire message", hiding the content below it.
+// Note: the email body carries NO images at all — no event banner, and no
+// base64 (data:) images, since an inlined image can exceed Gmail's ~102KB
+// clip limit and trigger "[Message clipped] View entire message", hiding
+// the content below it.
 //
 // All measurements are inline so email clients without head-style support
 // (Outlook desktop, Gmail's classic renderer) still get the layout.
@@ -303,38 +302,6 @@ function ticketAndBadgeBodyHtml(p, firstName) {
       </tr>
     </table>
   `;
-
-  // ── BANNER IMAGE ───────────────────────────────────────────────────
-  // Rendered when the admin uploaded a banner_url (or base64 data URL).
-  // Handles a few real-world shapes admins paste into the form:
-  //   - https://… (or http://) — used as-is
-  //   - data:image/… — used as-is (embedded base64)
-  //   - //cdn.example.com/x.png — protocol-relative → upgrade to https
-  //   - /uploads/x.png — origin-relative → prepend PUBLIC_APP_URL
-  // Width capped to the 504px column so it always fits the email card.
-  function normaliseBanner(raw) {
-    const v = String(raw || '').trim();
-    if (!v) return null;
-    // Skip base64 data: URLs. Inlining a multi-hundred-KB image pushes the
-    // email HTML past Gmail's ~102KB limit, which clips the message and shows
-    // "[Message clipped] View entire message" — hiding everything below it.
-    // Only hosted images (a short URL in the HTML) are safe in the body.
-    if (/^data:/i.test(v))   return null;
-    if (/^https?:/i.test(v)) return v;
-    if (v.startsWith('//'))  return 'https:' + v;
-    if (v.startsWith('/')) {
-      const origin = (process.env.PUBLIC_APP_URL || 'https://gospelar.app').replace(/\/$/, '');
-      return origin + v;
-    }
-    return v;
-  }
-  const bannerSrc = normaliseBanner(p.eventBannerUrl);
-  const bannerHtml = bannerSrc ? `
-    <div style="margin:0 0 18px;border-radius:18px;overflow:hidden;line-height:0;background:#F1F5F9;border:1px solid #E2E8F0">
-      <img src="${esc(bannerSrc)}" alt="${esc(p.eventTitle || 'Event banner')}" width="504"
-           style="display:block;width:100%;max-width:504px;height:auto;border:0;outline:none;text-decoration:none" />
-    </div>
-  ` : '';
 
   // ── EVENT DETAILS PANEL ────────────────────────────────────────────
   // Surface-card with label/value rows. Skips empty rows. The summary
@@ -441,7 +408,6 @@ function ticketAndBadgeBodyHtml(p, firstName) {
   `;
 
   return `
-    ${bannerHtml}
     ${heroHtml}
 
     <p style="margin:6px 0 10px;font-size:15px;line-height:1.55;color:#0F172A">
@@ -469,9 +435,9 @@ function ticketAndBadgeBodyHtml(p, firstName) {
 
 const TEMPLATES = {
   // Event registration confirmation — fires once per attendee right after
-  // a successful POST /register. The email is the ticket: it includes a
-  // scannable QR, the banner, and the full ticket details so an attendee
-  // can show it at the door without first opening the web ticket.
+  // a successful POST /register. The email focuses on event context; the
+  // scannable QR, ticket, and badge live in the attached PDFs so an attendee
+  // can show them at the door without first opening the web ticket.
   // Payload: { eventTitle, attendeeName, ticketCode, eventStartsAt?,
   //   eventLocation?, ticketUrl?, ticketTypeName?, accommodationName?,
   //   roomLabel?, seatLabel?, groupName? }
