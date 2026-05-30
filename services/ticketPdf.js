@@ -864,6 +864,166 @@ async function buildFormPdf(p) {
        width: innerW, align: 'right', characterSpacing: 2, lineBreak: false,
      });
 
+  // ── Page 2 — Event plan ──────────────────────────────────────────────────
+  // Rendered only when the event has a schedule or a long-form summary.
+  // Mirrors the day/items structure of the schedule JSONB (array of
+  // { day, items: string[] }), with the summary surfaced above the schedule
+  // when present. Auto-paginates if the schedule overflows a single A4 page.
+  const scheduleDays = Array.isArray(p.eventSchedule)
+    ? p.eventSchedule
+        .map((d) => ({
+          day:   String(d?.day || '').trim(),
+          items: Array.isArray(d?.items)
+            ? d.items.map((it) => String(it || '').trim()).filter(Boolean)
+            : [],
+        }))
+        .filter((d) => d.day || d.items.length)
+    : [];
+  const hasSummary  = !!(p.eventSummary && String(p.eventSummary).trim());
+  const hasPlanPage = scheduleDays.length > 0 || hasSummary;
+
+  if (hasPlanPage) {
+    doc.addPage();
+
+    // Header band — same theme as page 1.
+    paintDiagonalGradient(doc, margin, margin, innerW, bandH, theme.primary, theme.secondary);
+    doc.fillColor(theme.accent).font('Helvetica-Bold').fontSize(9)
+       .text(`${theme.label}  ·  EVENT PLAN`, margin + 18, margin + 14, {
+         characterSpacing: 2, lineBreak: false,
+       });
+    doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(18)
+       .text(p.eventTitle || 'Event', margin + 18, margin + 30, {
+         width: innerW - 36, ellipsis: true, lineBreak: false,
+       });
+    if (p.eventTagline) {
+      doc.fillColor('#FFFFFF').fillOpacity(0.85).font('Helvetica-Oblique').fontSize(9.5)
+         .text(p.eventTagline, margin + 18, margin + 55, {
+           width: innerW - 36, ellipsis: true, lineBreak: false,
+         });
+      doc.fillOpacity(1);
+    }
+
+    let cursor2 = margin + bandH + 22;
+
+    // Compact at-a-glance facts row (When / Ends / Where / RSVP by). Skips
+    // empties so a free, location-less webinar doesn't render blank cells.
+    const factsPairs = [
+      ['When',    fmtWhen(p.eventStartsAt)],
+      ['Ends',    fmtWhen(p.eventEndsAt)],
+      ['Where',   p.eventLocation || ''],
+      ['RSVP by', fmtWhen(p.eventRegistrationDeadline)],
+    ].filter(([, v]) => v);
+
+    if (factsPairs.length) {
+      const cellW = (innerW - 24) / Math.min(factsPairs.length, 4);
+      factsPairs.slice(0, 4).forEach(([label, value], i) => {
+        const x = margin + i * (cellW + 8);
+        doc.fillColor('#71717A').font('Helvetica-Bold').fontSize(7.5)
+           .text(label.toUpperCase(), x, cursor2, {
+             width: cellW, characterSpacing: 1.2, lineBreak: false,
+           });
+        doc.fillColor('#0F172A').font('Helvetica').fontSize(10.5)
+           .text(value, x, cursor2 + 11, {
+             width: cellW, ellipsis: true, lineBreak: false,
+           });
+      });
+      cursor2 += 38;
+    }
+
+    // Summary block — long-form description from the event row.
+    if (hasSummary) {
+      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10)
+         .text('ABOUT THIS EVENT', margin, cursor2, {
+           characterSpacing: 1.8, lineBreak: false,
+         });
+      cursor2 += 14;
+      doc.lineWidth(1.4).strokeColor(theme.accent)
+         .moveTo(margin, cursor2).lineTo(margin + 40, cursor2).stroke();
+      doc.lineWidth(0.5).strokeColor('#E5E7EB')
+         .moveTo(margin + 40, cursor2).lineTo(margin + innerW, cursor2).stroke();
+      cursor2 += 10;
+      const summaryText = String(p.eventSummary).trim();
+      doc.fillColor('#27272A').font('Helvetica').fontSize(10.5);
+      const summaryHeight = doc.heightOfString(summaryText, { width: innerW, lineGap: 2 });
+      doc.text(summaryText, margin, cursor2, { width: innerW, lineGap: 2 });
+      cursor2 += summaryHeight + 18;
+    }
+
+    // Schedule — one labelled block per day, items as soft bullets. Day
+    // blocks paginate independently: if a block would overflow the bottom
+    // margin, we addPage() first so a single day never splits mid-block.
+    if (scheduleDays.length) {
+      doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(10)
+         .text('SCHEDULE', margin, cursor2, {
+           characterSpacing: 1.8, lineBreak: false,
+         });
+      cursor2 += 14;
+      doc.lineWidth(1.4).strokeColor(theme.accent)
+         .moveTo(margin, cursor2).lineTo(margin + 40, cursor2).stroke();
+      doc.lineWidth(0.5).strokeColor('#E5E7EB')
+         .moveTo(margin + 40, cursor2).lineTo(margin + innerW, cursor2).stroke();
+      cursor2 += 12;
+
+      const bottomLimit = doc.page.height - margin - 36; // leave room for page-footer line
+
+      scheduleDays.forEach((d) => {
+        // Measure how tall this day block will be before drawing it so we
+        // can break cleanly to a new page if it won't fit.
+        doc.font('Helvetica-Bold').fontSize(11);
+        const dayLabelH = d.day ? doc.heightOfString(d.day || ' ', { width: innerW }) : 0;
+        let itemsH = 0;
+        if (d.items.length) {
+          doc.font('Helvetica').fontSize(10.5);
+          for (const it of d.items) {
+            itemsH += doc.heightOfString(it, { width: innerW - 14, lineGap: 1 }) + 4;
+          }
+        }
+        const blockH = dayLabelH + (d.items.length ? 6 + itemsH : 0) + 14;
+
+        if (cursor2 + blockH > bottomLimit) {
+          doc.addPage();
+          cursor2 = margin;
+        }
+
+        if (d.day) {
+          doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(11)
+             .text(d.day, margin, cursor2, { width: innerW });
+          cursor2 += dayLabelH + 4;
+        }
+        if (d.items.length) {
+          d.items.forEach((it) => {
+            // Bullet dot
+            doc.save();
+            doc.fillColor(theme.accent);
+            doc.circle(margin + 4, cursor2 + 5.5, 1.8).fill();
+            doc.restore();
+            doc.fillColor('#27272A').font('Helvetica').fontSize(10.5);
+            const h = doc.heightOfString(it, { width: innerW - 14, lineGap: 1 });
+            doc.text(it, margin + 14, cursor2, { width: innerW - 14, lineGap: 1 });
+            cursor2 += h + 4;
+          });
+        }
+        cursor2 += 10;
+      });
+    }
+
+    // Page footer — same dashed rule + brand stamp as page 1 for visual
+    // consistency. Applies to whichever page is current when we draw it.
+    const footY2 = doc.page.height - margin - 24;
+    doc.save();
+    doc.lineWidth(0.6).strokeColor('#A1A1AA').dash(4, { space: 3 })
+       .moveTo(margin, footY2).lineTo(margin + innerW, footY2).stroke();
+    doc.restore();
+    doc.fillColor('#52525B').font('Helvetica').fontSize(8)
+       .text(`Event plan  ·  ${p.eventTitle || ''}`, margin, footY2 + 8, {
+         width: innerW * 0.7, lineBreak: false,
+       });
+    doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(9)
+       .text('GOSPELAR', margin, footY2 + 8, {
+         width: innerW, align: 'right', characterSpacing: 2, lineBreak: false,
+       });
+  }
+
   doc.end();
   return out;
 }
