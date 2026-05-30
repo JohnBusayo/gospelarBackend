@@ -747,48 +747,108 @@ router.post('/api/events/:id/register', async (req, res) => {
     const eventTemplateId = eventRow.template_id || null;
     const ticketPriceCents = ttRow.price_cents || 0;
 
-    Promise.all(decorated.map((t) => {
-      const to = (t.attendeeEmail || '').toLowerCase();
-      if (!to) return null;
-      return sendNow({
-        kind:      'ticket.confirmation',
-        channel:   'email',
-        recipient: to,
-        payload: {
-          eventTitle:        t.eventTitle,
-          eventStartsAt:     t.eventStartsAt,
-          eventLocation:     t.eventLocation,
-          // Extra event fields surfaced in the confirmation email body.
-          // The ticket + badge visuals now live only in the attached PDFs,
-          // so the email leans on these to communicate event context.
-          eventTagline:              eventRow.tagline || null,
-          eventSummary:              eventRow.summary || null,
-          eventEndsAt:               eventRow.ends_at || null,
-          eventRegistrationDeadline: eventRow.registration_deadline || null,
-          eventSchedule:             eventRow.schedule || null,
-          eventBannerUrl:            eventRow.banner_url || null,
-          organizerEmail:            eventRow.creator_email || null,
-          attendeeName:      t.attendeeName,
-          attendeeEmail:     t.attendeeEmail,
-          attendeePhone:     t.attendeePhone,
-          attendeePhoto:     t.attendeePhoto,
-          attendeeProfile:   t.attendeeProfile,
-          ticketCode:        t.code,
-          role:              t.role,
-          ticketUrl:         t.ticketUrl,
-          ticketTypeName:    t.ticketTypeName,
-          accommodationName: t.accommodationName,
-          roomLabel:         t.roomLabel,
-          seatLabel:         t.seatLabel,
-          groupName:         t.groupName,
-          groupType:         t.groupType,
-          templateId:        eventTemplateId,
-          priceCents:        ticketPriceCents,
-        },
-        dedupeKey: `ticket:${t.code}:email:confirmation:${to}`,
-        metadata:  { ticketCode: t.code, eventId: t.eventId, groupId: t.groupId || null, source: 'register-handler' },
-      }).catch((e) => console.warn('register confirm-email failed', t.code, e.message));
-    })).catch(() => {});
+    // Event fields shared by every confirmation email in this batch.
+    const eventEmailFields = {
+      eventTitle,
+      eventStartsAt,
+      eventLocation,
+      eventTagline:              eventRow.tagline || null,
+      eventSummary:              eventRow.summary || null,
+      eventEndsAt:               eventRow.ends_at || null,
+      eventRegistrationDeadline: eventRow.registration_deadline || null,
+      eventBannerUrl:            eventRow.banner_url || null,
+      organizerEmail:            eventRow.creator_email || null,
+      templateId:                eventTemplateId,
+      priceCents:                ticketPriceCents,
+    };
+
+    if (group) {
+      // GROUP registration → one summary email to the group's contact listing
+      // every member + the shared contact/emergency/other info. The contact
+      // gets the whole batch in a single message (with each member's ticket +
+      // badge PDF attached) instead of one email per member. The shared
+      // contact/emergency/other fields prefer explicit values from the group
+      // payload, falling back to the first attendee's profile (every member in
+      // group mode carries the same merged shared values).
+      const lead = decorated[0] || {};
+      const leadProfile = lead.attendeeProfile || {};
+      const contactEmail = String(
+        groupLeadEmail || lead.attendeeEmail || '',
+      ).toLowerCase();
+
+      const members = decorated.map((t) => {
+        const prof = t.attendeeProfile || {};
+        return {
+          name:            t.attendeeName,
+          title:           prof.title || '',
+          sex:             prof.sex || '',
+          ageBracket:      prof.ageBracket || '',
+          status:          prof.maritalStatus || '',
+          ticketCode:      t.code,
+          seatLabel:       t.seatLabel || null,
+          role:            t.role || 'attendee',
+          ticketUrl:       t.ticketUrl || null,
+          ticketTypeName:  t.ticketTypeName || null,
+          attendeeProfile: t.attendeeProfile || null,
+        };
+      });
+
+      if (contactEmail) {
+        sendNow({
+          kind:      'group.confirmation',
+          channel:   'email',
+          recipient: contactEmail,
+          payload: {
+            ...eventEmailFields,
+            groupName: group.name || null,
+            groupType: group.type || null,
+            contact: {
+              phone: group.contactPhone || lead.attendeePhone || leadProfile.phone || '',
+              email: contactEmail,
+            },
+            emergency: {
+              name:  group.emergencyName  || leadProfile.emergencyName  || '',
+              phone: group.emergencyPhone || leadProfile.emergencyPhone || '',
+            },
+            otherInfo: group.otherInfo || leadProfile.otherInfo || '',
+            members,
+            ticketUrl: lead.ticketUrl || null,
+          },
+          dedupeKey: `group:${groupId}:email:confirmation:${contactEmail}`,
+          metadata:  { groupId, eventId, source: 'register-handler', memberCount: members.length },
+        }).catch((e) => console.warn('register group confirm-email failed', groupId, e.message));
+      }
+    } else {
+      // Individual registration → one ticket.confirmation per attendee.
+      Promise.all(decorated.map((t) => {
+        const to = (t.attendeeEmail || '').toLowerCase();
+        if (!to) return null;
+        return sendNow({
+          kind:      'ticket.confirmation',
+          channel:   'email',
+          recipient: to,
+          payload: {
+            ...eventEmailFields,
+            attendeeName:      t.attendeeName,
+            attendeeEmail:     t.attendeeEmail,
+            attendeePhone:     t.attendeePhone,
+            attendeePhoto:     t.attendeePhoto,
+            attendeeProfile:   t.attendeeProfile,
+            ticketCode:        t.code,
+            role:              t.role,
+            ticketUrl:         t.ticketUrl,
+            ticketTypeName:    t.ticketTypeName,
+            accommodationName: t.accommodationName,
+            roomLabel:         t.roomLabel,
+            seatLabel:         t.seatLabel,
+            groupName:         t.groupName,
+            groupType:         t.groupType,
+          },
+          dedupeKey: `ticket:${t.code}:email:confirmation:${to}`,
+          metadata:  { ticketCode: t.code, eventId: t.eventId, groupId: t.groupId || null, source: 'register-handler' },
+        }).catch((e) => console.warn('register confirm-email failed', t.code, e.message));
+      })).catch(() => {});
+    }
 
     res.json({ tickets: decorated, primaryCode: decorated[0]?.code || null, groupId });
   } catch (e) {

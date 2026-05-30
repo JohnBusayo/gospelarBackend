@@ -432,6 +432,166 @@ function ticketAndBadgeBodyHtml(p, firstName) {
   `;
 }
 
+// Builds the body for the GROUP confirmation email — a single message sent to
+// the group's contact when a family / church group / department registers
+// together. Where ticketAndBadgeBodyHtml focuses on one person, this leads
+// with a roster of every member (name · title · gender · age bracket · status)
+// and a single shared "Contact & emergency" panel, because in group mode the
+// registration form collects identity per member but contact/emergency/other
+// just once for the whole group. Layout (top → bottom):
+//
+//   1. HERO — themed gradient panel with the group name + event title + meta.
+//   2. INTRO — "Hi {group} team," + a thanks line pointing at the attached PDFs.
+//   3. EVENT DETAILS — WHEN / ENDS / WHERE / RSVP BY + summary (same as solo).
+//   4. MEMBERS — numbered table: each member's name, identity line, ticket code.
+//   5. CONTACT & EMERGENCY — the once-entered shared phone/email, emergency
+//      contact, and any "other information" note.
+//   6. ORGANIZER + SIGN-OFF.
+//
+// Like the solo body it embeds NO base64 images, so the message never trips
+// Gmail's ~102KB clip. Per-member ticket + badge PDFs ride along as attachments.
+function groupBodyHtml(p) {
+  const theme        = themeFor(p.templateId);
+  const whenLine     = fmtWhen(p.eventStartsAt);
+  const endsLine     = fmtWhen(p.eventEndsAt);
+  const deadlineLine = fmtWhen(p.eventRegistrationDeadline);
+  const heroBg       = `linear-gradient(135deg, ${theme.primary} 0%, ${theme.secondary} 50%, ${theme.secondary} 100%)`;
+  const members      = Array.isArray(p.members) ? p.members : [];
+  const metaLine     = [whenLine, p.eventLocation].filter(Boolean).join('  ·  ');
+  const groupTitle   = p.groupName || 'Your group';
+
+  // ── HERO ──────────────────────────────────────────────────────────────
+  const heroHtml = `
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;margin:0 0 18px;border-radius:18px;overflow:hidden;background:${theme.primary}">
+      <tr>
+        <td style="padding:26px 28px;background:${heroBg};color:#FFFFFF">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.24em;text-transform:uppercase;color:rgba(255,255,255,0.85)">
+            Your group is in! · ${members.length} ${members.length === 1 ? 'member' : 'members'}
+          </div>
+          <div style="margin-top:10px;font-size:24px;font-weight:900;letter-spacing:-0.4px;line-height:1.18;color:#FFFFFF">
+            ${esc(groupTitle)}
+          </div>
+          <div style="margin-top:6px;font-size:14px;font-weight:700;color:rgba(255,255,255,0.95)">
+            ${esc(p.eventTitle || 'Event')}
+          </div>
+          ${metaLine ? `
+            <div style="margin-top:6px;font-size:13px;color:rgba(255,255,255,0.92)">
+              ${esc(metaLine)}
+            </div>` : ''}
+        </td>
+      </tr>
+    </table>
+  `;
+
+  // ── EVENT DETAILS ───────────────────────────────────────────────────────
+  const summaryParaHtml = p.eventSummary ? `
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid #E2E8F0;font-size:14px;line-height:1.65;color:#334155;white-space:pre-wrap">
+      ${esc(p.eventSummary)}
+    </div>
+  ` : '';
+  const locationCell = p.eventLocation
+    ? `<span>${esc(p.eventLocation)}</span>
+       <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.eventLocation)}"
+          style="display:inline-block;margin-left:8px;font-size:11.5px;font-weight:700;color:#2563EB;text-decoration:none">View map →</a>`
+    : '';
+  const detailsRows = [
+    detailRow('When',     esc(whenLine || '')),
+    endsLine     ? detailRow('Ends',    esc(endsLine)) : '',
+    locationCell ? detailRow('Where',   locationCell) : '',
+    deadlineLine ? detailRow('RSVP by', esc(deadlineLine)) : '',
+  ].filter(Boolean).join('');
+  const detailsPanelHtml = (detailsRows || summaryParaHtml) ? `
+    <div style="margin:0 0 18px;padding:18px 20px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:14px">
+      <div style="font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#64748B;margin-bottom:10px">Event details</div>
+      ${detailsRows ? `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">${detailsRows}</table>` : ''}
+      ${summaryParaHtml}
+    </div>
+  ` : '';
+
+  // ── MEMBERS ROSTER ───────────────────────────────────────────────────────
+  const memberRows = members.map((m, i) => {
+    const fullName = [m.title, m.name].filter(Boolean).join(' ') || `Member ${i + 1}`;
+    const identity = [m.sex, m.ageBracket, m.status].filter(Boolean).join('  ·  ');
+    const codeCell = [
+      m.ticketCode ? `<span style="font-family:ui-monospace,Menlo,Consolas,monospace">${esc(m.ticketCode)}</span>` : '',
+      m.seatLabel  ? `<span style="color:#64748B"> · Seat ${esc(m.seatLabel)}</span>` : '',
+    ].filter(Boolean).join('');
+    return `
+      <tr>
+        <td style="padding:10px 8px;vertical-align:top;border-top:1px solid #EEF2F7;font-size:13px;font-weight:800;color:#94A3B8;width:28px">${i + 1}</td>
+        <td style="padding:10px 8px;vertical-align:top;border-top:1px solid #EEF2F7">
+          <div style="font-size:14px;font-weight:700;color:#0F172A">${esc(fullName)}</div>
+          ${identity ? `<div style="font-size:12px;color:#64748B;margin-top:2px">${esc(identity)}</div>` : ''}
+        </td>
+        <td style="padding:10px 8px;vertical-align:top;border-top:1px solid #EEF2F7;text-align:right;font-size:12px;color:#0F172A;white-space:nowrap">${codeCell}</td>
+      </tr>`;
+  }).join('');
+  const membersPanelHtml = members.length ? `
+    <div style="margin:0 0 18px;padding:18px 20px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:14px">
+      <div style="font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#64748B;margin-bottom:6px">Group members (${members.length})</div>
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">
+        ${memberRows}
+      </table>
+      <p style="margin:12px 0 0;font-size:11.5px;color:#64748B;line-height:1.55">Each member's ticket and printable badge are attached to this email as PDFs.</p>
+    </div>
+  ` : '';
+
+  // ── SHARED CONTACT & EMERGENCY ────────────────────────────────────────────
+  const emergencyLine = [p.emergency?.name, p.emergency?.phone].filter(Boolean).map(esc).join('  ·  ');
+  const contactRows = [
+    detailRow('Contact phone', esc(p.contact?.phone || '')),
+    detailRow('Contact email', esc(p.contact?.email || '')),
+    emergencyLine ? detailRow('Emergency', emergencyLine) : '',
+  ].filter(Boolean).join('');
+  const otherInfoHtml = p.otherInfo ? `
+    <div style="margin-top:${contactRows ? '14px' : '0'};padding-top:${contactRows ? '14px' : '0'};${contactRows ? 'border-top:1px solid #E2E8F0;' : ''}font-size:14px;line-height:1.6;color:#334155;white-space:pre-wrap">
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#64748B;display:block;margin-bottom:4px">Other information</span>
+      ${esc(p.otherInfo)}
+    </div>
+  ` : '';
+  const sharedPanelHtml = (contactRows || otherInfoHtml) ? `
+    <div style="margin:0 0 22px;padding:18px 20px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:14px">
+      <div style="font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#64748B;margin-bottom:10px">Group contact &amp; emergency</div>
+      ${contactRows ? `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">${contactRows}</table>` : ''}
+      ${otherInfoHtml}
+    </div>
+  ` : '';
+
+  // ── ORGANIZER ──────────────────────────────────────────────────────────
+  const organizerHtml = p.organizerEmail ? `
+    <p style="margin:18px 0 8px;font-size:14px;color:#334155;line-height:1.6">
+      Questions? Reach the organizer at
+      <a href="mailto:${esc(p.organizerEmail)}" style="color:#2563EB;font-weight:700;text-decoration:none">${esc(p.organizerEmail)}</a>.
+    </p>
+  ` : `
+    <p style="margin:18px 0 8px;font-size:14px;color:#334155;line-height:1.6">
+      Questions? Reply to this email and we'll route it to the organizer.
+    </p>
+  `;
+
+  return `
+    ${heroHtml}
+
+    <p style="margin:6px 0 10px;font-size:15px;line-height:1.55;color:#0F172A">
+      Hi ${esc(groupTitle)} team,
+    </p>
+    <p style="margin:0 0 22px;font-size:14.5px;line-height:1.6;color:#334155">
+      Thanks for registering your group for <strong style="color:#0F172A">${esc(p.eventTitle || 'this event')}</strong>.
+      All ${members.length} ${members.length === 1 ? 'member is' : 'members are'} confirmed below, and each
+      member's ticket and printable badge are attached as PDFs — bring either one (printed or on a phone) to check-in.
+    </p>
+
+    ${detailsPanelHtml}
+    ${membersPanelHtml}
+    ${sharedPanelHtml}
+
+    ${organizerHtml}
+    <p style="margin:0;font-size:14px;color:#334155;line-height:1.6">
+      Grace and peace,<br/><strong style="color:#0F172A">The Gospelar team</strong>
+    </p>
+  `;
+}
+
 
 const TEMPLATES = {
   // Event registration confirmation — fires once per attendee right after
@@ -453,6 +613,29 @@ const TEMPLATES = {
         p.ticketUrl, 'Open ticket online →',
       ),
       sms: `${BRAND}: You're registered for ${p.eventTitle}. Ticket: ${p.ticketCode}. Show this code at check-in.`,
+    };
+  },
+
+  // Group registration confirmation — ONE email to the group's contact when a
+  // family / church group / department registers together. Lists every member
+  // and the shared contact/emergency info. Payload:
+  //   { eventTitle, eventStartsAt?, eventLocation?, eventSummary?, ...event,
+  //     groupName, groupType, templateId?,
+  //     contact: { phone, email }, emergency: { name, phone }, otherInfo?,
+  //     members: [{ name, title, sex, ageBracket, status, ticketCode, seatLabel,
+  //                 role?, attendeeProfile? }] }
+  // Per-member ticket + badge PDFs are attached in sendNow().
+  'group.confirmation': (p) => {
+    const count = Array.isArray(p.members) ? p.members.length : 0;
+    return {
+      subject: `Your group is registered — ${p.groupName || 'group'} · ${p.eventTitle || 'event'}`,
+      html: shellEmail(
+        `Your group is registered for ${esc(p.eventTitle || 'the event')}`,
+        groupBodyHtml(p),
+        p.ticketUrl || null,
+        p.ticketUrl ? 'Open a ticket online →' : null,
+      ),
+      sms: `${BRAND}: ${p.groupName || 'Your group'} (${count} ${count === 1 ? 'member' : 'members'}) is registered for ${p.eventTitle}. Tickets are in the email we sent ${p.contact?.email || 'you'}.`,
     };
   },
 
@@ -601,6 +784,39 @@ async function sendNow({ kind, channel, recipient, payload, dedupeKey, metadata 
         ];
       } catch (e) {
         console.warn('[notifications] PDF generation failed for', payload.ticketCode, '-', e.message);
+      }
+    } else if (kind === 'group.confirmation' && Array.isArray(payload?.members) && payload.members.length) {
+      // One email, many tickets — attach each member's ticket + badge PDF.
+      // (Form PDFs are skipped here to keep the attachment count manageable
+      // for large groups; the per-member data still lives on each ticket.)
+      // Each member payload inherits the shared event fields, then overlays
+      // the member's own attendee fields so the PDF renderers see the same
+      // shape they get for a single ticket.confirmation send.
+      try {
+        const atts = [];
+        for (const m of payload.members) {
+          if (!m?.ticketCode) continue;
+          const memberPayload = {
+            ...payload,
+            members:         undefined,
+            ticketCode:      m.ticketCode,
+            attendeeName:    m.name || '',
+            attendeeProfile: m.attendeeProfile || null,
+            attendeePhoto:   (m.attendeeProfile && m.attendeeProfile.photo) || null,
+            seatLabel:       m.seatLabel || null,
+            role:            m.role || 'attendee',
+            ticketUrl:       m.ticketUrl || payload.ticketUrl || null,
+          };
+          const [ticketPdf, badgePdf] = await Promise.all([
+            buildTicketPdf(memberPayload),
+            buildBadgePdf(memberPayload),
+          ]);
+          atts.push({ filename: `ticket-${m.ticketCode}.pdf`, content: ticketPdf });
+          atts.push({ filename: `badge-${m.ticketCode}.pdf`,  content: badgePdf  });
+        }
+        attachments = atts.length ? atts : null;
+      } catch (e) {
+        console.warn('[notifications] group PDF generation failed -', e.message);
       }
     }
     result = await sendMail({

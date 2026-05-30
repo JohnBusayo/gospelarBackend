@@ -506,49 +506,99 @@ router.post('/api/admin/pending-registrations/:id/approve', userAuth, async (req
     await client.query('COMMIT');
 
     // Confirmation emails — same payload shape and dedupe key as the
-    // standard register handler (routes/events.js).
-    Promise.all(tickets.map((t) => {
-      const to = (t.attendee_email || '').toLowerCase();
-      if (!to) return null;
-      return sendNow({
-        kind:      'ticket.confirmation',
-        channel:   'email',
-        recipient: to,
-        payload: {
-          eventTitle:        p.event_title,
-          eventStartsAt:     p.event_starts_at,
-          eventLocation:     p.event_location,
-          // Mirror the standard register handler: surface event-level context
-          // in the confirmation body now that the ticket + badge visuals live
-          // only in the attached PDFs.
-          eventTagline:              p.event_tagline || null,
-          eventSummary:              p.event_summary || null,
-          eventEndsAt:               p.event_ends_at || null,
-          eventRegistrationDeadline: p.event_registration_deadline || null,
-          eventSchedule:             p.event_schedule || null,
-          eventBannerUrl:            p.event_banner_url || null,
-          organizerEmail:            p.creator_email || null,
-          attendeeName:      t.attendee_name,
-          attendeeEmail:     t.attendee_email,
-          attendeePhone:     t.attendee_phone,
-          attendeePhoto:     (t.attendee_profile && t.attendee_profile.photo) || null,
-          attendeeProfile:   t.attendee_profile,
-          ticketCode:        t.code,
-          role:              t.role,
-          ticketUrl:         t.ticket_url,
-          ticketTypeName:    ttRow.name,
-          accommodationName: accRow?.name || null,
-          roomLabel:         t.room_label,
-          seatLabel:         t.seat_label,
-          groupName:         t.group_name,
-          groupType:         t.group_type,
-          templateId:        p.event_template_id,
-          priceCents:        ttRow.price_cents || 0,
-        },
-        dedupeKey: `ticket:${t.code}:email:confirmation:${to}`,
-        metadata:  { ticketCode: t.code, eventId: p.event_id, source: 'pending-approve' },
-      }).catch((e) => console.warn('approve confirm-email failed', t.code, e.message));
-    })).catch(() => {});
+    // standard register handler (routes/events.js): one group summary when
+    // the registration is a group, otherwise one ticket.confirmation each.
+    const eventEmailFields = {
+      eventTitle:        p.event_title,
+      eventStartsAt:     p.event_starts_at,
+      eventLocation:     p.event_location,
+      // Surface event-level context in the confirmation body now that the
+      // ticket + badge visuals live only in the attached PDFs.
+      eventTagline:              p.event_tagline || null,
+      eventSummary:              p.event_summary || null,
+      eventEndsAt:               p.event_ends_at || null,
+      eventRegistrationDeadline: p.event_registration_deadline || null,
+      eventBannerUrl:            p.event_banner_url || null,
+      organizerEmail:            p.creator_email || null,
+      templateId:                p.event_template_id,
+      priceCents:                ttRow.price_cents || 0,
+    };
+
+    if (group) {
+      const lead        = tickets[0] || {};
+      const leadProfile = lead.attendee_profile || {};
+      const contactEmail = String(groupLeadEmail || lead.attendee_email || '').toLowerCase();
+      const members = tickets.map((t) => {
+        const prof = t.attendee_profile || {};
+        return {
+          name:            t.attendee_name,
+          title:           prof.title || '',
+          sex:             prof.sex || '',
+          ageBracket:      prof.ageBracket || '',
+          status:          prof.maritalStatus || '',
+          ticketCode:      t.code,
+          seatLabel:       t.seat_label || null,
+          role:            t.role || 'attendee',
+          ticketUrl:       t.ticket_url || null,
+          ticketTypeName:  ttRow.name || null,
+          attendeeProfile: t.attendee_profile || null,
+        };
+      });
+      if (contactEmail) {
+        sendNow({
+          kind:      'group.confirmation',
+          channel:   'email',
+          recipient: contactEmail,
+          payload: {
+            ...eventEmailFields,
+            groupName: group.name || null,
+            groupType: group.type || null,
+            contact: {
+              phone: group.contactPhone || lead.attendee_phone || leadProfile.phone || '',
+              email: contactEmail,
+            },
+            emergency: {
+              name:  group.emergencyName  || leadProfile.emergencyName  || '',
+              phone: group.emergencyPhone || leadProfile.emergencyPhone || '',
+            },
+            otherInfo: group.otherInfo || leadProfile.otherInfo || '',
+            members,
+            ticketUrl: lead.ticket_url || null,
+          },
+          dedupeKey: `group:${groupId}:email:confirmation:${contactEmail}`,
+          metadata:  { groupId, eventId: p.event_id, source: 'pending-approve', memberCount: members.length },
+        }).catch((e) => console.warn('approve group confirm-email failed', groupId, e.message));
+      }
+    } else {
+      Promise.all(tickets.map((t) => {
+        const to = (t.attendee_email || '').toLowerCase();
+        if (!to) return null;
+        return sendNow({
+          kind:      'ticket.confirmation',
+          channel:   'email',
+          recipient: to,
+          payload: {
+            ...eventEmailFields,
+            attendeeName:      t.attendee_name,
+            attendeeEmail:     t.attendee_email,
+            attendeePhone:     t.attendee_phone,
+            attendeePhoto:     (t.attendee_profile && t.attendee_profile.photo) || null,
+            attendeeProfile:   t.attendee_profile,
+            ticketCode:        t.code,
+            role:              t.role,
+            ticketUrl:         t.ticket_url,
+            ticketTypeName:    ttRow.name,
+            accommodationName: accRow?.name || null,
+            roomLabel:         t.room_label,
+            seatLabel:         t.seat_label,
+            groupName:         t.group_name,
+            groupType:         t.group_type,
+          },
+          dedupeKey: `ticket:${t.code}:email:confirmation:${to}`,
+          metadata:  { ticketCode: t.code, eventId: p.event_id, source: 'pending-approve' },
+        }).catch((e) => console.warn('approve confirm-email failed', t.code, e.message));
+      })).catch(() => {});
+    }
 
     res.json({
       ok: true,
