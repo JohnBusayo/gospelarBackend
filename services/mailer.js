@@ -20,7 +20,7 @@ function getConfig() {
     // Override via MAIL_FROM env var (e.g. set MAIL_FROM=onboarding@resend.dev
     // while you're still waiting on DNS verification — that sandbox sender
     // works without any DNS setup but only mails the Resend account owner).
-    from:   process.env.MAIL_FROM      || 'Gospelar Sunday School <noreply@gospelar.com>',
+    from:   process.env.MAIL_FROM      || 'HG Children Department <noreply@gospelar.com>',
   };
 }
 
