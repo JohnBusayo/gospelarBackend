@@ -760,6 +760,10 @@ router.post('/api/events/:id/register', async (req, res) => {
       organizerEmail:            eventRow.creator_email || null,
       templateId:                eventTemplateId,
       priceCents:                ticketPriceCents,
+      // Carried for the attached form PDF's "Event plan" page (schedule +
+      // summary). The email body intentionally does NOT render the schedule —
+      // only buildFormPdf reads eventSchedule — so this stays out of the inbox.
+      eventSchedule:             eventRow.schedule || null,
     };
 
     if (group) {

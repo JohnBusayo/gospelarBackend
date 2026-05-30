@@ -522,6 +522,9 @@ router.post('/api/admin/pending-registrations/:id/approve', userAuth, async (req
       organizerEmail:            p.creator_email || null,
       templateId:                p.event_template_id,
       priceCents:                ttRow.price_cents || 0,
+      // For the attached form PDF's "Event plan" page (schedule + summary).
+      // Read only by buildFormPdf — not rendered in the email body.
+      eventSchedule:             p.event_schedule || null,
     };
 
     if (group) {

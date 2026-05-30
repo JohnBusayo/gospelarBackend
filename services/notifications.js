@@ -786,12 +786,12 @@ async function sendNow({ kind, channel, recipient, payload, dedupeKey, metadata 
         console.warn('[notifications] PDF generation failed for', payload.ticketCode, '-', e.message);
       }
     } else if (kind === 'group.confirmation' && Array.isArray(payload?.members) && payload.members.length) {
-      // One email, many tickets — attach each member's ticket + badge PDF.
-      // (Form PDFs are skipped here to keep the attachment count manageable
-      // for large groups; the per-member data still lives on each ticket.)
-      // Each member payload inherits the shared event fields, then overlays
-      // the member's own attendee fields so the PDF renderers see the same
-      // shape they get for a single ticket.confirmation send.
+      // One email, many tickets — attach each member's ticket, badge, and the
+      // filled registration form (which carries the event details + schedule on
+      // its "Event plan" page). Each member payload inherits the shared event
+      // fields (including eventSchedule), then overlays the member's own
+      // attendee fields so the PDF renderers see the same shape they get for a
+      // single ticket.confirmation send.
       try {
         const atts = [];
         for (const m of payload.members) {
@@ -807,12 +807,14 @@ async function sendNow({ kind, channel, recipient, payload, dedupeKey, metadata 
             role:            m.role || 'attendee',
             ticketUrl:       m.ticketUrl || payload.ticketUrl || null,
           };
-          const [ticketPdf, badgePdf] = await Promise.all([
+          const [ticketPdf, badgePdf, formPdf] = await Promise.all([
             buildTicketPdf(memberPayload),
             buildBadgePdf(memberPayload),
+            buildFormPdf(memberPayload),
           ]);
           atts.push({ filename: `ticket-${m.ticketCode}.pdf`, content: ticketPdf });
           atts.push({ filename: `badge-${m.ticketCode}.pdf`,  content: badgePdf  });
+          atts.push({ filename: `form-${m.ticketCode}.pdf`,   content: formPdf   });
         }
         attachments = atts.length ? atts : null;
       } catch (e) {
