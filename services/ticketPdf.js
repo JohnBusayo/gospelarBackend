@@ -966,44 +966,120 @@ async function buildFormPdf(p) {
 
       const bottomLimit = doc.page.height - margin - 36; // leave room for page-footer line
 
-      scheduleDays.forEach((d) => {
-        // Measure how tall this day block will be before drawing it so we
-        // can break cleanly to a new page if it won't fit.
-        doc.font('Helvetica-Bold').fontSize(11);
-        const dayLabelH = d.day ? doc.heightOfString(d.day || ' ', { width: innerW }) : 0;
-        let itemsH = 0;
-        if (d.items.length) {
-          doc.font('Helvetica').fontSize(10.5);
-          for (const it of d.items) {
-            itemsH += doc.heightOfString(it, { width: innerW - 14, lineGap: 1 }) + 4;
-          }
-        }
-        const blockH = dayLabelH + (d.items.length ? 6 + itemsH : 0) + 14;
+      // Three-column timetable: TIME | ACTIVITY | DESCRIPTION. Each schedule
+      // item is a tab-separated string ("9:00 AM<TAB>Arrival<TAB>Details") or
+      // an object { time, activity, description }. Columns wrap independently;
+      // the header repeats on every page the table spills onto.
+      const padX = 7, padY = 6;
+      const colTimeW = Math.round(innerW * 0.21);
+      const colActW  = Math.round(innerW * 0.31);
+      const colDescW = innerW - colTimeW - colActW;
+      const colX = [
+        margin,
+        margin + colTimeW,
+        margin + colTimeW + colActW,
+      ];
+      const colW = [colTimeW, colActW, colDescW];
 
-        if (cursor2 + blockH > bottomLimit) {
-          doc.addPage();
-          cursor2 = margin;
+      function parseRow(it) {
+        if (it && typeof it === 'object') {
+          return {
+            time:        String(it.time || '').trim(),
+            activity:    String(it.activity || '').trim(),
+            description: String(it.description || '').trim(),
+          };
         }
+        const parts = String(it || '').split('\t').map((s) => s.trim());
+        // A bare line with no tabs is treated as an activity (no time column),
+        // so legacy single-string schedules still read sensibly.
+        if (parts.length === 1) return { time: '', activity: parts[0], description: '' };
+        return { time: parts[0] || '', activity: parts[1] || '', description: parts.slice(2).join(' — ') };
+      }
 
-        if (d.day) {
-          doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(11)
-             .text(d.day, margin, cursor2, { width: innerW });
-          cursor2 += dayLabelH + 4;
-        }
-        if (d.items.length) {
-          d.items.forEach((it) => {
-            // Bullet dot
-            doc.save();
-            doc.fillColor(theme.accent);
-            doc.circle(margin + 4, cursor2 + 5.5, 1.8).fill();
-            doc.restore();
-            doc.fillColor('#27272A').font('Helvetica').fontSize(10.5);
-            const h = doc.heightOfString(it, { width: innerW - 14, lineGap: 1 });
-            doc.text(it, margin + 14, cursor2, { width: innerW - 14, lineGap: 1 });
-            cursor2 += h + 4;
+      function drawHeader(y) {
+        const hH = 20;
+        doc.save();
+        doc.fillColor(theme.primary).rect(margin, y, innerW, hH).fill();
+        doc.restore();
+        doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(8);
+        ['TIME', 'ACTIVITY', 'DESCRIPTION'].forEach((label, c) => {
+          doc.text(label, colX[c] + padX, y + 6.5, {
+            width: colW[c] - padX * 2, characterSpacing: 1, lineBreak: false,
           });
+        });
+        return y + hH;
+      }
+
+      // Outer border + the two column dividers for one page's worth of table
+      // (between `top` and `bottom`). Called on each page break and at the end
+      // so multi-page tables get clean column lines on every page.
+      function closeSegment(top, bottom) {
+        doc.lineWidth(0.8).strokeColor('#D4D4D8').rect(margin, top, innerW, bottom - top).stroke();
+        doc.lineWidth(0.5).strokeColor('#E5E7EB');
+        doc.moveTo(colX[1], top).lineTo(colX[1], bottom).stroke();
+        doc.moveTo(colX[2], top).lineTo(colX[2], bottom).stroke();
+      }
+
+      scheduleDays.forEach((d) => {
+        const rows = d.items.map(parseRow).filter((r) => r.time || r.activity || r.description);
+        if (!rows.length && !d.day) return;
+
+        // Optional day caption (multi-day events). Break to a new page if the
+        // caption + header + first row wouldn't fit.
+        if (d.day) {
+          doc.font('Helvetica-Bold').fontSize(11);
+          const dayH = doc.heightOfString(d.day, { width: innerW });
+          if (cursor2 + dayH + 40 > bottomLimit) { doc.addPage(); cursor2 = margin; }
+          doc.fillColor('#0F172A').text(d.day, margin, cursor2, { width: innerW, lineBreak: false });
+          cursor2 += dayH + 6;
         }
-        cursor2 += 10;
+
+        let tableTop = cursor2;
+        cursor2 = drawHeader(cursor2);
+        let zebra = false;
+
+        rows.forEach((r) => {
+          // Measure the tallest cell to get the row height.
+          doc.font('Helvetica-Bold').fontSize(9);
+          const hTime = doc.heightOfString(r.time || ' ',     { width: colW[0] - padX * 2 });
+          const hAct  = doc.heightOfString(r.activity || ' ', { width: colW[1] - padX * 2 });
+          doc.font('Helvetica').fontSize(9);
+          const hDesc = doc.heightOfString(r.description || ' ', { width: colW[2] - padX * 2, lineGap: 1 });
+          const rowH = Math.max(hTime, hAct, hDesc) + padY * 2;
+
+          // Page break — close the current table border, start fresh with a
+          // repeated header on the next page.
+          if (cursor2 + rowH > bottomLimit) {
+            closeSegment(tableTop, cursor2);
+            doc.addPage();
+            cursor2 = margin;
+            tableTop = cursor2;
+            cursor2 = drawHeader(cursor2);
+            zebra = false;
+          }
+
+          if (zebra) {
+            doc.save();
+            doc.fillColor('#F4F6FB').rect(margin, cursor2, innerW, rowH).fill();
+            doc.restore();
+          }
+          doc.fillColor(theme.primary).font('Helvetica-Bold').fontSize(9)
+             .text(r.time, colX[0] + padX, cursor2 + padY, { width: colW[0] - padX * 2 });
+          doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(9)
+             .text(r.activity, colX[1] + padX, cursor2 + padY, { width: colW[1] - padX * 2 });
+          doc.fillColor('#3F3F46').font('Helvetica').fontSize(9)
+             .text(r.description, colX[2] + padX, cursor2 + padY, { width: colW[2] - padX * 2, lineGap: 1 });
+
+          // Row separator.
+          doc.lineWidth(0.5).strokeColor('#E5E7EB')
+             .moveTo(margin, cursor2 + rowH).lineTo(margin + innerW, cursor2 + rowH).stroke();
+          cursor2 += rowH;
+          zebra = !zebra;
+        });
+
+        // Outer border + column dividers for the final page segment.
+        closeSegment(tableTop, cursor2);
+        cursor2 += 16;
       });
     }
 
