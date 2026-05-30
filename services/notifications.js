@@ -240,21 +240,26 @@ function themeFor(templateId) {
 // recipient gets all the context they need without having to open the
 // attachment. Layout (top → bottom):
 //
-//   1. HERO CARD — theme-coloured gradient panel with a "YOU'RE IN!"
+//   1. BANNER IMAGE — admin-uploaded event banner, full-width across the
+//      top of the body, when the event has one.
+//   2. HERO CARD — theme-coloured gradient panel with a "YOU'RE IN!"
 //      eyebrow, the big event title, an optional tagline, and a single
 //      "date · location" meta line.
-//   2. OPTIONAL BANNER — admin-uploaded event banner image, if any.
 //   3. INTRO — "Hi {firstName}," + a short thanks line that points the
 //      recipient at the attached PDFs (no QR or ticket code inline).
 //   4. DOWNLOAD BUTTONS — Ticket PDF / Badge PDF / Form PDF. These same
 //      files are attached to the email; the buttons are a fallback for
 //      inboxes that hide attachments.
 //   5. EVENT DETAILS PANEL — label/value rows: WHEN / ENDS / WHERE /
-//      RSVP BY, plus the event summary as a free-text block.
-//   6. SCHEDULE — optional bulleted list grouped by day, when the admin
+//      RSVP BY (with a 'View map' link on Where when a location is set),
+//      plus the event summary as a free-text block.
+//   6. YOUR BOOKING PANEL — attendee-specific allocations (ticket type,
+//      accommodation, room, seat, group, price). Skipped if the event
+//      is free / unallocated.
+//   7. SCHEDULE — optional bulleted list grouped by day, when the admin
 //      filled in the schedule on event creation.
-//   7. ORGANIZER — reply-to line so the recipient knows who to contact.
-//   8. SIGN-OFF — "Grace and peace,".
+//   8. ORGANIZER — reply-to line so the recipient knows who to contact.
+//   9. SIGN-OFF — "Grace and peace,".
 //
 // All measurements are inline so email clients without head-style support
 // (Outlook desktop, Gmail's classic renderer) still get the layout.
@@ -297,12 +302,30 @@ function ticketAndBadgeBodyHtml(p, firstName) {
     </table>
   `;
 
-  // ── OPTIONAL BANNER IMAGE ──────────────────────────────────────────
-  // Only rendered when the admin uploaded a banner_url on the event. Width
-  // capped to the 504px column so it always fits.
-  const bannerHtml = p.eventBannerUrl ? `
-    <div style="margin:0 0 20px;border-radius:14px;overflow:hidden;line-height:0;background:#F1F5F9">
-      <img src="${esc(p.eventBannerUrl)}" alt="" width="504" style="display:block;width:100%;max-width:504px;height:auto" />
+  // ── BANNER IMAGE ───────────────────────────────────────────────────
+  // Rendered when the admin uploaded a banner_url (or base64 data URL).
+  // Handles a few real-world shapes admins paste into the form:
+  //   - https://… (or http://) — used as-is
+  //   - data:image/… — used as-is (embedded base64)
+  //   - //cdn.example.com/x.png — protocol-relative → upgrade to https
+  //   - /uploads/x.png — origin-relative → prepend PUBLIC_APP_URL
+  // Width capped to the 504px column so it always fits the email card.
+  function normaliseBanner(raw) {
+    const v = String(raw || '').trim();
+    if (!v) return null;
+    if (/^(https?:|data:)/i.test(v)) return v;
+    if (v.startsWith('//'))         return 'https:' + v;
+    if (v.startsWith('/')) {
+      const origin = (process.env.PUBLIC_APP_URL || 'https://gospelar.app').replace(/\/$/, '');
+      return origin + v;
+    }
+    return v;
+  }
+  const bannerSrc = normaliseBanner(p.eventBannerUrl);
+  const bannerHtml = bannerSrc ? `
+    <div style="margin:0 0 18px;border-radius:18px;overflow:hidden;line-height:0;background:#F1F5F9;border:1px solid #E2E8F0">
+      <img src="${esc(bannerSrc)}" alt="${esc(p.eventTitle || 'Event banner')}" width="504"
+           style="display:block;width:100%;max-width:504px;height:auto;border:0;outline:none;text-decoration:none" />
     </div>
   ` : '';
 
@@ -315,15 +338,26 @@ function ticketAndBadgeBodyHtml(p, firstName) {
     </div>
   ` : '';
 
+  // Wrap the location text with a Google Maps link so attendees can route to
+  // the venue in one tap. We use maps.google.com/?q= because it works on
+  // both Android (Maps) and iOS (Maps) without a custom URL scheme.
+  const locationCell = p.eventLocation
+    ? `<span>${esc(p.eventLocation)}</span>
+       <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.eventLocation)}"
+          style="display:inline-block;margin-left:8px;font-size:11.5px;font-weight:700;color:#2563EB;text-decoration:none">
+         View map →
+       </a>`
+    : '';
+
   const detailsRows = [
     detailRow('When',     esc(whenLine || '')),
     endsLine     ? detailRow('Ends',    esc(endsLine)) : '',
-    detailRow('Where',    esc(p.eventLocation || '')),
+    locationCell ? detailRow('Where',   locationCell) : '',
     deadlineLine ? detailRow('RSVP by', esc(deadlineLine)) : '',
   ].filter(Boolean).join('');
 
   const detailsPanelHtml = (detailsRows || summaryParaHtml) ? `
-    <div style="margin:0 0 22px;padding:18px 20px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:14px">
+    <div style="margin:0 0 18px;padding:18px 20px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:14px">
       <div style="font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#64748B;margin-bottom:10px">
         Event details
       </div>
@@ -332,6 +366,56 @@ function ticketAndBadgeBodyHtml(p, firstName) {
           ${detailsRows}
         </table>` : ''}
       ${summaryParaHtml}
+    </div>
+  ` : '';
+
+  // ── YOUR BOOKING ───────────────────────────────────────────────────
+  // Attendee-specific allocations sourced from the ticket row: which
+  // ticket type they bought, the accommodation / room / seat they were
+  // assigned, and (for group registrations) the group they belong to.
+  // We intentionally exclude the ticket CODE here — that lives in the
+  // attached ticket PDF, matching the agreed split that "ticket and
+  // badge" visuals stay in the PDFs while the email body focuses on
+  // event context. A free, unallocated event renders no panel.
+  const priceLabel = (() => {
+    const cents = Number(p.priceCents || 0);
+    if (!cents) return '';
+    return '₦' + Math.round(cents / 100).toLocaleString('en-NG');
+  })();
+
+  const bookingRows = [
+    detailRow('Name',          esc(p.attendeeName || '')),
+    p.attendeeEmail   ? detailRow('Email',         esc(p.attendeeEmail))                  : '',
+    p.ticketTypeName  ? detailRow('Ticket type',   esc(p.ticketTypeName))                 : '',
+    p.accommodationName
+      ? detailRow('Accommodation', esc(p.accommodationName))
+      : '',
+    p.roomLabel       ? detailRow('Room',          esc(p.roomLabel))                      : '',
+    p.seatLabel       ? detailRow('Seat',          esc(p.seatLabel))                      : '',
+    p.groupName
+      ? detailRow('Group',
+          `${esc(p.groupName)}${p.groupType ? ` <span style="color:#64748B">(${esc(p.groupType)})</span>` : ''}`)
+      : '',
+    priceLabel        ? detailRow('Paid',          `<span style="font-weight:700;color:#0F172A">${esc(priceLabel)}</span>`) : '',
+  ].filter(Boolean).join('');
+
+  // Hide the whole panel for events where the only attendee data we have
+  // is the name — those have nothing booking-specific to surface.
+  const hasBookingExtras =
+    p.attendeeEmail || p.ticketTypeName || p.accommodationName ||
+    p.roomLabel || p.seatLabel || p.groupName || priceLabel;
+
+  const bookingPanelHtml = (bookingRows && hasBookingExtras) ? `
+    <div style="margin:0 0 22px;padding:18px 20px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:14px">
+      <div style="font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#64748B;margin-bottom:10px">
+        Your booking
+      </div>
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse">
+        ${bookingRows}
+      </table>
+      <p style="margin:12px 0 0;font-size:11.5px;color:#64748B;line-height:1.55">
+        Your ticket code and QR are in the attached ticket PDF.
+      </p>
     </div>
   ` : '';
 
@@ -385,8 +469,8 @@ function ticketAndBadgeBodyHtml(p, firstName) {
   `;
 
   return `
-    ${heroHtml}
     ${bannerHtml}
+    ${heroHtml}
 
     <p style="margin:6px 0 10px;font-size:15px;line-height:1.55;color:#0F172A">
       Hi ${esc(firstName)},
@@ -401,6 +485,7 @@ function ticketAndBadgeBodyHtml(p, firstName) {
     ${downloadButtonsHtml(downloadUrls(p))}
 
     ${detailsPanelHtml}
+    ${bookingPanelHtml}
     ${scheduleHtml}
 
     ${organizerHtml}
