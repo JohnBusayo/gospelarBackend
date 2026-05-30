@@ -256,10 +256,12 @@ function themeFor(templateId) {
 //   6. YOUR BOOKING PANEL — attendee-specific allocations (ticket type,
 //      accommodation, room, seat, group, price). Skipped if the event
 //      is free / unallocated.
-//   7. SCHEDULE — optional bulleted list grouped by day, when the admin
-//      filled in the schedule on event creation.
-//   8. ORGANIZER — reply-to line so the recipient knows who to contact.
-//   9. SIGN-OFF — "Grace and peace,".
+//   7. ORGANIZER — reply-to line so the recipient knows who to contact.
+//   8. SIGN-OFF — "Grace and peace,".
+//
+// Note: the email body intentionally embeds NO base64 (data:) images — an
+// inlined banner/photo can exceed Gmail's ~102KB clip limit and trigger
+// "[Message clipped] View entire message", hiding the content below it.
 //
 // All measurements are inline so email clients without head-style support
 // (Outlook desktop, Gmail's classic renderer) still get the layout.
@@ -313,8 +315,13 @@ function ticketAndBadgeBodyHtml(p, firstName) {
   function normaliseBanner(raw) {
     const v = String(raw || '').trim();
     if (!v) return null;
-    if (/^(https?:|data:)/i.test(v)) return v;
-    if (v.startsWith('//'))         return 'https:' + v;
+    // Skip base64 data: URLs. Inlining a multi-hundred-KB image pushes the
+    // email HTML past Gmail's ~102KB limit, which clips the message and shows
+    // "[Message clipped] View entire message" — hiding everything below it.
+    // Only hosted images (a short URL in the HTML) are safe in the body.
+    if (/^data:/i.test(v))   return null;
+    if (/^https?:/i.test(v)) return v;
+    if (v.startsWith('//'))  return 'https:' + v;
     if (v.startsWith('/')) {
       const origin = (process.env.PUBLIC_APP_URL || 'https://gospelar.app').replace(/\/$/, '');
       return origin + v;
@@ -419,41 +426,6 @@ function ticketAndBadgeBodyHtml(p, firstName) {
     </div>
   ` : '';
 
-  // ── SCHEDULE ────────────────────────────────────────────────────────
-  // The schedule JSONB is an array of { day, items: string[] }. Falls back
-  // gracefully if the admin left it blank or fed in a malformed shape.
-  const scheduleHtml = (() => {
-    const raw = p.eventSchedule;
-    const days = Array.isArray(raw) ? raw : null;
-    if (!days || !days.length) return '';
-    const dayBlocks = days
-      .map((d) => {
-        const items = Array.isArray(d?.items) ? d.items.filter((x) => String(x || '').trim()) : [];
-        if (!d?.day && !items.length) return '';
-        const itemList = items.length
-          ? `<ul style="margin:6px 0 0;padding-left:18px;font-size:14px;line-height:1.6;color:#334155">
-               ${items.map((it) => `<li style="margin:0 0 4px">${esc(it)}</li>`).join('')}
-             </ul>`
-          : '';
-        return `
-          <div style="margin:0 0 12px">
-            ${d.day ? `<div style="font-size:13px;font-weight:800;color:#0F172A;letter-spacing:-0.1px">${esc(d.day)}</div>` : ''}
-            ${itemList}
-          </div>`;
-      })
-      .filter(Boolean)
-      .join('');
-    if (!dayBlocks) return '';
-    return `
-      <div style="margin:0 0 22px;padding:18px 20px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:14px">
-        <div style="font-size:11px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#64748B;margin-bottom:10px">
-          Schedule
-        </div>
-        ${dayBlocks}
-      </div>
-    `;
-  })();
-
   // ── ORGANIZER ──────────────────────────────────────────────────────
   // Best-effort reply-to line. Falls back to "reply to this email" copy
   // when the event row has no creator_email on it.
@@ -486,7 +458,6 @@ function ticketAndBadgeBodyHtml(p, firstName) {
 
     ${detailsPanelHtml}
     ${bookingPanelHtml}
-    ${scheduleHtml}
 
     ${organizerHtml}
     <p style="margin:0;font-size:14px;color:#334155;line-height:1.6">
