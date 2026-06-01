@@ -49,13 +49,32 @@ const addBookToList = (raw, bookId) => {
   return Array.from(set).join(',');
 };
 
+// True when a subscribed_books list grants EVERY book — used by the free
+// trial, which stores the sentinel 'all' instead of enumerating each SKU so
+// books added later are unlocked automatically for the trial's duration.
+const booksGrantAll = (raw) => parseBooks(raw).includes('all');
+
+// Does this subscribed_books value grant access to bookId? Honors the 'all'
+// wildcard. bookId is lower-cased to match the stored slugs.
+const booksIncludeBook = (raw, bookId) => {
+  const list = parseBooks(raw);
+  return list.includes('all') || list.includes(String(bookId).toLowerCase());
+};
+
+// Free-trial length in days. One calendar month, expressed as 30 days so the
+// countdown is predictable regardless of which month the user starts in.
+const TRIAL_DAYS = 30;
+
 module.exports = {
   isValidEmail,
   addDays,
   SUBSCRIPTION_DAYS,
+  TRIAL_DAYS,
   randCode,
   randToken,
   makeCertNo,
   parseBooks,
   addBookToList,
+  booksGrantAll,
+  booksIncludeBook,
 };

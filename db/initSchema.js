@@ -268,6 +268,14 @@ const initDb = async () => {
     `ALTER TABLE subscribers ALTER COLUMN plan_type TYPE VARCHAR(64)`,
     `ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS subscribed_books    TEXT        DEFAULT ''`,
 
+    // ── 2026-06: one-time free trial. is_trial flags the current sub as a
+    //    promotional 30-day grant (vs a paid plan); trial_started_at is set
+    //    once and never cleared so a reinstall / new device can't farm a
+    //    second free month. A trial row uses plan_type='all' + subscribed_
+    //    books='all' so it unlocks both Sunday School and every book.
+    `ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS is_trial         BOOLEAN     DEFAULT FALSE`,
+    `ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ`,
+
     // ── 2026-05 fix: prevent the DEFAULT 'adult' on subscribed_category from
     //    leaking Sunday-School access to users who only bought a book.
     `UPDATE subscribers

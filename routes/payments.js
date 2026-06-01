@@ -8,7 +8,8 @@ const crypto  = require('crypto');
 const db = require('../db');
 const { adminAuth } = require('../middleware/auth');
 const {
-  isValidEmail, addDays, parseBooks, addBookToList, SUBSCRIPTION_DAYS,
+  isValidEmail, addDays, parseBooks, addBookToList, booksIncludeBook,
+  SUBSCRIPTION_DAYS, TRIAL_DAYS,
 } = require('../utils/helpers');
 const {
   VALID_CATS, VALID_PLANS, PROVIDERS,
@@ -303,20 +304,28 @@ router.post('/api/verify-payment', async (req, res) => {
       const r = await db.query(`
         INSERT INTO subscribers
           (email,is_active,subscription_date,expiry_date,paystack_ref,
-           subscribed_books,price_kobo,plan_type,subscribed_category)
-        VALUES ($1,TRUE,$2,$3,$4,$5,$6,$7,NULL)
+           subscribed_books,price_kobo,plan_type,subscribed_category,is_trial)
+        VALUES ($1,TRUE,$2,$3,$4,$5,$6,$7,NULL,FALSE)
         ON CONFLICT (email) DO UPDATE SET
           is_active         = TRUE,
           subscription_date = EXCLUDED.subscription_date,
           expiry_date       = GREATEST(subscribers.expiry_date, EXCLUDED.expiry_date),
           paystack_ref      = EXCLUDED.paystack_ref,
-          subscribed_books  = EXCLUDED.subscribed_books,
+          subscribed_books  = CASE
+                                -- preserve an 'all' (trial/all-access) grant; otherwise
+                                -- append the newly-purchased book to the list.
+                                WHEN POSITION('all' IN COALESCE(subscribers.subscribed_books,'')) > 0
+                                  THEN subscribers.subscribed_books
+                                ELSE EXCLUDED.subscribed_books
+                              END,
           price_kobo        = EXCLUDED.price_kobo,
           plan_type         = CASE
                                 WHEN subscribers.plan_type IN ('single','all')
                                   THEN subscribers.plan_type
                                 ELSE EXCLUDED.plan_type
                               END,
+          -- A real purchase converts a trial into a paid subscription.
+          is_trial          = FALSE,
           updated_at        = NOW()
         RETURNING *
       `, [userEmail, now, exp, reference, newBooks, priceKobo, planId]);
@@ -335,16 +344,32 @@ router.post('/api/verify-payment', async (req, res) => {
     const plan     = await getPlanPricing(planType);
     const now      = new Date(), exp = addDays(now, plan.days);
     const priceKobo = txn.amount || plan.price_kobo;
+    // When converting a trial (subscribed_books='all') into a paid plan:
+    //   • an 'all' category plan keeps all-books access (it's all-access);
+    //   • a 'single' category plan must DROP the trial's 'all' wildcard so the
+    //     buyer doesn't keep every book for free — they get only the SS
+    //     category they paid for.
+    const booksForPaid = planType === 'all' ? 'all' : '';
     const r = await db.query(`
       INSERT INTO subscribers
-        (email,is_active,subscription_date,expiry_date,paystack_ref,subscribed_category,price_kobo,plan_type)
-      VALUES ($1,TRUE,$2,$3,$4,$5,$6,$7)
+        (email,is_active,subscription_date,expiry_date,paystack_ref,subscribed_category,price_kobo,plan_type,subscribed_books,is_trial)
+      VALUES ($1,TRUE,$2,$3,$4,$5,$6,$7,$8,FALSE)
       ON CONFLICT (email) DO UPDATE SET is_active=TRUE,
         subscription_date=EXCLUDED.subscription_date, expiry_date=EXCLUDED.expiry_date,
         paystack_ref=EXCLUDED.paystack_ref, subscribed_category=EXCLUDED.subscribed_category,
-        price_kobo=EXCLUDED.price_kobo, plan_type=EXCLUDED.plan_type, updated_at=NOW()
+        price_kobo=EXCLUDED.price_kobo, plan_type=EXCLUDED.plan_type,
+        subscribed_books = CASE
+                             -- keep any real per-book purchases the user already
+                             -- had, unless this is an all-access plan; only the
+                             -- trial 'all' wildcard gets cleared for single plans.
+                             WHEN $7 = 'all' THEN 'all'
+                             WHEN POSITION('all' IN COALESCE(subscribers.subscribed_books,'')) > 0
+                               THEN ''
+                             ELSE subscribers.subscribed_books
+                           END,
+        is_trial=FALSE, updated_at=NOW()
       RETURNING *
-    `, [userEmail, now, exp, reference, safeCategory, priceKobo, planType]);
+    `, [userEmail, now, exp, reference, safeCategory, priceKobo, planType, booksForPaid]);
     console.log('[Sub] Activated %s → plan:%s cat:%s', userEmail, planType, safeCategory);
     notifyPaymentSuccess(userEmail, planType === 'all' ? 'All Categories' : `${safeCategory} (Single)`, priceKobo, r.rows[0].expiry_date);
     res.json({
@@ -439,15 +464,101 @@ router.post('/api/subscription/verify', async (req, res) => {
   }
 });
 
+// ── Free one-month trial ─────────────────────────────────────────────────────
+// Every account is eligible for ONE 30-day all-access trial, granted the first
+// time the app calls this on launch. Idempotent and abuse-resistant:
+//   • trial_started_at is set once and never cleared, so a reinstall or a
+//     second device returns the existing trial instead of minting a new one.
+//   • A user who already has (or had) a PAID plan is not downgraded or given a
+//     trial — we only create a trial for brand-new emails with no row, or
+//     re-affirm an existing un-expired trial.
+// The trial uses plan_type='all' + subscribed_category='all' + subscribed_
+// books='all' so it unlocks Sunday School AND every book for the month.
+router.post('/api/subscription/start-trial', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ ok: false, code: 'invalid_email', message: 'A valid email is required.' });
+  }
+  try {
+    const existing = await db.query(
+      `SELECT is_active, expiry_date, plan_type, subscribed_category, subscribed_books,
+              is_trial, trial_started_at,
+              (is_active=TRUE AND expiry_date IS NOT NULL AND expiry_date>NOW()) AS active
+         FROM subscribers WHERE LOWER(email)=LOWER($1)`,
+      [email],
+    );
+    const row = existing.rows[0];
+
+    // Already used a trial before (even if now expired) → never grant a second.
+    if (row?.trial_started_at) {
+      return res.json({
+        ok: true, granted: false, reason: 'already_used',
+        is_trial: row.is_trial === true,
+        active: row.active === true,
+        expiry_date: row.expiry_date,
+        days_remaining: row.expiry_date
+          ? Math.max(0, Math.ceil((new Date(row.expiry_date) - new Date()) / 86400000))
+          : 0,
+      });
+    }
+
+    // Holds a real paid plan already → don't touch it; just report status.
+    const isPaid = row && row.plan_type && !String(row.plan_type).startsWith('trial');
+    if (row && row.active === true && isPaid && !row.is_trial) {
+      return res.json({
+        ok: true, granted: false, reason: 'already_subscribed',
+        is_trial: false, active: true, expiry_date: row.expiry_date,
+        days_remaining: row.expiry_date
+          ? Math.max(0, Math.ceil((new Date(row.expiry_date) - new Date()) / 86400000))
+          : null,
+      });
+    }
+
+    const now = new Date();
+    const exp = addDays(now, TRIAL_DAYS);
+    const r = await db.query(`
+      INSERT INTO subscribers
+        (email, is_active, subscription_date, expiry_date, paystack_ref,
+         subscribed_category, plan_type, subscribed_books, price_kobo,
+         is_trial, trial_started_at)
+      VALUES ($1, TRUE, $2, $3, $4, 'all', 'all', 'all', 0, TRUE, $2)
+      ON CONFLICT (email) DO UPDATE SET
+        is_active           = TRUE,
+        subscription_date   = EXCLUDED.subscription_date,
+        expiry_date         = EXCLUDED.expiry_date,
+        paystack_ref        = EXCLUDED.paystack_ref,
+        subscribed_category = 'all',
+        plan_type           = 'all',
+        subscribed_books    = 'all',
+        price_kobo          = 0,
+        is_trial            = TRUE,
+        trial_started_at    = EXCLUDED.subscription_date,
+        updated_at          = NOW()
+      RETURNING expiry_date
+    `, [email, now, exp, `TRIAL_${now.getTime()}`]);
+
+    console.log('[Trial] Granted 30-day all-access trial to %s (until %s)', email, exp.toISOString());
+    return res.json({
+      ok: true, granted: true, reason: 'granted',
+      is_trial: true, active: true,
+      expiry_date: r.rows[0].expiry_date,
+      days_remaining: TRIAL_DAYS,
+    });
+  } catch (e) {
+    console.error('start-trial:', e.code || '(no code)', e.message);
+    return res.status(500).json({ ok: false, code: 'server_error', message: 'Could not start trial.' });
+  }
+});
+
 router.get('/api/subscription/status/:email', async (req, res) => {
   try {
     const r = await db.query(`
       SELECT is_active, expiry_date, subscribed_category, plan_type, price_kobo,
-             subscribed_books,
+             subscribed_books, is_trial, trial_started_at,
              (is_active=TRUE AND expiry_date IS NOT NULL AND expiry_date>NOW()) AS active
       FROM subscribers WHERE LOWER(email)=LOWER($1)
     `, [req.params.email]);
-    if (!r.rows.length) return res.json({ active: false, expiry_date: null, subscribed_books: [] });
+    if (!r.rows.length) return res.json({ active: false, expiry_date: null, subscribed_books: [], is_trial: false });
     const sub = r.rows[0];
     let days_remaining = null;
     if (sub.expiry_date) {
@@ -458,6 +569,9 @@ router.get('/api/subscription/status/:email', async (req, res) => {
       subscribed_category: sub.subscribed_category || 'adult',
       plan_type: sub.plan_type || 'single', price_kobo: sub.price_kobo || 50000,
       subscribed_books: parseBooks(sub.subscribed_books),
+      // Surface trial state so the app can show "X days left of your free month"
+      // and the dashboard can badge trial rows distinctly from paid ones.
+      is_trial: sub.active === true && sub.is_trial === true,
     });
   } catch (e) { return res.status(500).json({ error: e.message }); }
 });
@@ -497,10 +611,11 @@ router.get('/api/subscription/can-access-book/:email/:bookId', async (req, res) 
     const sub = r.rows[0];
     if (!sub.active) return res.json({ canAccess: false, reason: 'expired' });
     const books = parseBooks(sub.subscribed_books);
-    const owned = books.includes(String(bookId).toLowerCase());
+    // 'all' wildcard (free trial / all-access grants) unlocks every book.
+    const owned = booksIncludeBook(sub.subscribed_books, bookId);
     return res.json({
       canAccess: owned,
-      reason: owned ? 'book_owned' : 'not_purchased',
+      reason: owned ? (books.includes('all') ? 'all_access' : 'book_owned') : 'not_purchased',
       subscribed_books: books,
     });
   } catch (e) { res.status(500).json({ canAccess: false, reason: 'server_error' }); }
@@ -526,7 +641,7 @@ router.get('/api/subscribers', adminAuth, async (req, res) => {
     const r = await db.query(`
       SELECT id,email,is_active,subscription_date,expiry_date,
              subscribed_category,plan_type,price_kobo,paystack_ref,
-             subscribed_books, created_at,updated_at
+             subscribed_books, is_trial, trial_started_at, created_at,updated_at
       FROM subscribers ORDER BY created_at DESC
     `);
     res.json({
